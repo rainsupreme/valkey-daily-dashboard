@@ -1,0 +1,379 @@
+"""HTML report generator for Valkey CI failure trends."""
+
+from __future__ import annotations
+
+import html
+import json
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Optional
+
+from valkey_oncall.cache import Cache
+
+
+def generate_report_data(
+    cache: Cache,
+    days: int = 14,
+    branch: str = "unstable",
+    workflow: str = "daily.yml",
+    client=None,
+) -> Dict:
+    """Build the data structure for the failure trend report.
+
+    If *client* (a ``GitHubActionsClient``) is provided, the report will
+    include the list of commits between consecutive runs.
+    """
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
+        "%Y-%m-%dT00:00:00Z"
+    )
+
+    all_runs = cache.query_runs(
+        workflow=workflow, branch=branch, since=since
+    )
+    # Keep only completed scheduled runs (one per day, skip duplicates)
+    seen_dates: set[str] = set()
+    runs: List[Dict] = []
+    for r in all_runs:
+        if r["status"] in ("in_progress", "queued", "skipped"):
+            continue
+        date_key = r["run_date"][:10]
+        if date_key in seen_dates:
+            continue
+        seen_dates.add(date_key)
+        runs.append(r)
+
+    # Oldest first for the timeline
+    runs.sort(key=lambda r: r["run_date"])
+
+    # For each run, gather jobs and failures
+    run_details: List[Dict] = []
+    # test_name -> [{run_date, status, error_summary, job_names}]
+    test_timeline: Dict[str, Dict[str, Dict]] = defaultdict(dict)
+
+    for run in runs:
+        rid = run["run_id"]
+        date_key = run["run_date"][:10]
+        all_jobs = cache.query_jobs(rid)
+        failed_jobs = cache.query_jobs(rid, failed_only=True)
+
+        run_info = {
+            "run_id": rid,
+            "date": date_key,
+            "status": run["status"],
+            "commit_sha": run.get("commit_sha", ""),
+            "total_jobs": len(all_jobs),
+            "failed_jobs": len(failed_jobs),
+            "failed_job_names": sorted(j["name"] for j in failed_jobs),
+        }
+
+        # Gather failures for this run
+        run_failures: List[Dict] = []
+        for j in failed_jobs:
+            for f in cache.query_failures(job_id=j["job_id"]):
+                run_failures.append({**f, "job_name": j["name"]})
+
+        # Group by test_name
+        by_test: Dict[str, List[Dict]] = defaultdict(list)
+        for f in run_failures:
+            by_test[f["test_name"]].append(f)
+
+        run_info["unique_failures"] = len(by_test)
+        run_info["failure_names"] = sorted(by_test.keys())
+        run_details.append(run_info)
+
+        # Record in timeline
+        for test_name, instances in by_test.items():
+            error_summaries = sorted(set(
+                inst["error_summary"][:120] for inst in instances
+            ))
+            job_names = sorted(set(inst["job_name"] for inst in instances))
+            test_timeline[test_name][date_key] = {
+                "count": len(instances),
+                "errors": error_summaries,
+                "jobs": job_names,
+            }
+
+    # Sort tests by total failure count (most frequent first)
+    test_totals = {
+        name: sum(d["count"] for d in dates.values())
+        for name, dates in test_timeline.items()
+    }
+    sorted_tests = sorted(test_totals.keys(), key=lambda n: -test_totals[n])
+
+    dates = [r["date"] for r in run_details]
+
+    # Fetch commits between consecutive runs if a client is provided
+    if client:
+        for i in range(1, len(run_details)):
+            prev_sha = run_details[i - 1]["commit_sha"]
+            curr_sha = run_details[i]["commit_sha"]
+            if prev_sha and curr_sha and prev_sha != curr_sha:
+                try:
+                    commits = client.compare_commits(prev_sha, curr_sha)
+                    run_details[i]["commits_since_prev"] = commits
+                except Exception:
+                    run_details[i]["commits_since_prev"] = []
+            else:
+                run_details[i]["commits_since_prev"] = []
+
+    return {
+        "dates": dates,
+        "runs": run_details,
+        "tests": {
+            name: {
+                "total": test_totals[name],
+                "days_failed": len(test_timeline[name]),
+                "timeline": {
+                    d: test_timeline[name].get(d) for d in dates
+                },
+            }
+            for name in sorted_tests
+        },
+        "summary": {
+            "days": days,
+            "branch": branch,
+            "workflow": workflow,
+            "total_runs": len(run_details),
+            "failed_runs": sum(
+                1 for r in run_details if r["status"] == "failure"
+            ),
+            "unique_tests_failed": len(sorted_tests),
+        },
+    }
+
+
+def render_html(data: Dict) -> str:
+    """Render the report data as a self-contained HTML file."""
+    summary = data["summary"]
+    dates = data["dates"]
+    tests = data["tests"]
+    runs = data["runs"]
+
+    # Build date headers — just day number, with full date on hover
+    date_headers = ""
+    for d in dates:
+        day = d[8:10]  # "01" from "2026-04-01"
+        date_headers += f'<th title="{d}">{day}</th>'
+
+    # Build run status row (overall pass/fail per day)
+    run_status_cells = ""
+    for run in runs:
+        cls = "pass" if run["status"] == "success" else "fail"
+        title = f'{run["date"]}: {run["status"]} ({run["failed_jobs"]}/{run["total_jobs"]} jobs failed)'
+        run_status_cells += f'<td class="cell {cls}" title="{html.escape(title)}"></td>'
+
+    # Build test rows
+    test_rows = ""
+    for test_name, info in tests.items():
+        # Shorten the display name
+        short_name = _short_test_name(test_name)
+        freq = f'{info["days_failed"]}/{len(dates)}d'
+
+        cells = ""
+        for d in dates:
+            entry = info["timeline"][d]
+            if entry is None:
+                cells += '<td class="cell none" title="no failure"></td>'
+            else:
+                n = entry["count"]
+                jobs = ", ".join(entry["jobs"][:3])
+                if len(entry["jobs"]) > 3:
+                    jobs += f" +{len(entry['jobs'])-3}"
+                errs = "; ".join(entry["errors"][:2])
+                tip = html.escape(f'{n}x on {d}\nJobs: {jobs}\nError: {errs}')
+                cells += f'<td class="cell fail" title="{tip}">{n}</td>'
+
+        test_rows += f"""<tr>
+            <td class="test-name" title="{html.escape(test_name)}">{html.escape(short_name)}</td>
+            <td class="freq">{freq}</td>
+            {cells}
+        </tr>"""
+
+    # Build per-run detail rows for the bottom table
+    run_detail_rows = ""
+    for run in reversed(runs):  # newest first
+        if run["status"] == "success":
+            status_badge = '<span class="badge pass">PASS</span>'
+        else:
+            status_badge = f'<span class="badge fail">FAIL ({run["failed_jobs"]}/{run["total_jobs"]})</span>'
+        jobs_list = run["failed_job_names"][:5]
+        jobs_extra = len(run["failed_job_names"]) - 5
+        if jobs_list:
+            jobs_html = '<div class="job-list">'
+            for jn in jobs_list:
+                jobs_html += f'<div class="job-entry">{html.escape(jn)}</div>'
+            if jobs_extra > 0:
+                jobs_html += f'<div class="job-entry" style="color:#8b949e">+{jobs_extra} more</div>'
+            jobs_html += '</div>'
+        else:
+            jobs_html = "—"
+        sha = run.get("commit_sha", "")
+        sha_link = _commit_link(sha) if sha else "—"
+
+        # Commits since previous run
+        commits = run.get("commits_since_prev", [])
+        if commits:
+            commits_html = '<div class="commit-list">'
+            for c in commits:
+                c_link = _commit_link(c["sha"])
+                author = html.escape(c.get("author", "")[:20])
+                msg = html.escape(c.get("message", "")[:80])
+                commits_html += f'<div class="commit-entry">{c_link} <span class="commit-author">{author}</span> {msg}</div>'
+            commits_html += '</div>'
+        else:
+            commits_html = '<span class="no-commits">—</span>'
+
+        run_detail_rows += f"""<tr>
+            <td>{run["date"]}</td>
+            <td>{status_badge}</td>
+            <td>{sha_link}</td>
+            <td>{run["unique_failures"]}</td>
+            <td class="failures-cell">{_render_failure_names(run.get("failure_names", []))}</td>
+            <td class="jobs-cell">{jobs_html}</td>
+            <td class="commits-cell">{commits_html}</td>
+        </tr>"""
+
+    return _HTML_TEMPLATE.format(
+        branch=html.escape(summary["branch"]),
+        workflow=html.escape(summary["workflow"]),
+        days=summary["days"],
+        total_runs=summary["total_runs"],
+        failed_runs=summary["failed_runs"],
+        unique_tests=summary["unique_tests_failed"],
+        generated=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        date_headers=date_headers,
+        run_status_cells=run_status_cells,
+        test_rows=test_rows,
+        run_detail_rows=run_detail_rows,
+        report_json=html.escape(json.dumps(data, indent=2)),
+    )
+
+
+def _short_test_name(name: str) -> str:
+    """Shorten a test name for display in the grid."""
+    # Strip " in tests/..." suffix for the grid, keep it in the tooltip
+    if " in tests/" in name:
+        name = name.split(" in tests/")[0]
+    # Strip "(exception)" suffix
+    name = name.replace(" (exception)", "")
+    # Truncate
+    if len(name) > 60:
+        name = name[:57] + "..."
+    return name
+
+
+def _commit_link(sha: str) -> str:
+    """Render a short commit SHA as a GitHub link."""
+    if not sha:
+        return ""
+    short = sha[:7]
+    return (
+        f'<a href="https://github.com/valkey-io/valkey/commit/{sha}" '
+        f'class="sha" title="{sha}">{short}</a>'
+    )
+
+
+def _render_failure_names(names: List[str]) -> str:
+    """Render a list of failure names as a compact list."""
+    if not names:
+        return "—"
+    items = "".join(
+        f'<div class="failure-entry">{html.escape(_short_test_name(n))}</div>'
+        for n in names
+    )
+    return f'<div class="failure-list">{items}</div>'
+
+
+_HTML_TEMPLATE = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Valkey CI Failure Report — {branch}</title>
+<style>
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+         background: #0d1117; color: #c9d1d9; padding: 20px; font-size: 13px; }}
+  h1 {{ font-size: 18px; margin-bottom: 4px; color: #f0f6fc; }}
+  .meta {{ color: #8b949e; margin-bottom: 16px; font-size: 12px; }}
+  .stats {{ display: flex; gap: 24px; margin-bottom: 20px; }}
+  .stat {{ background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+           padding: 10px 16px; }}
+  .stat-val {{ font-size: 22px; font-weight: 600; color: #f0f6fc; }}
+  .stat-label {{ font-size: 11px; color: #8b949e; }}
+  table {{ border-collapse: collapse; margin-bottom: 24px; }}
+  th, td {{ padding: 3px 6px; text-align: center; font-size: 12px; }}
+  th {{ color: #8b949e; font-weight: 500; position: sticky; top: 0; background: #0d1117; }}
+  .test-name {{ text-align: left; max-width: 340px; overflow: hidden;
+                text-overflow: ellipsis; white-space: nowrap; font-family: monospace;
+                font-size: 11px; padding-right: 8px; }}
+  .freq {{ color: #8b949e; font-size: 11px; white-space: nowrap; padding-right: 4px; }}
+  .cell {{ width: 22px; height: 22px; min-width: 22px; border-radius: 3px;
+           font-size: 10px; line-height: 22px; cursor: default; }}
+  .cell.fail {{ background: #da3633; color: #fff; font-weight: 600; }}
+  .cell.pass {{ background: #238636; }}
+  .cell.none {{ background: #21262d; }}
+  .badge {{ padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }}
+  .badge.pass {{ background: #238636; color: #fff; }}
+  .badge.fail {{ background: #da3633; color: #fff; }}
+  .section {{ margin-top: 24px; }}
+  .section h2 {{ font-size: 14px; color: #f0f6fc; margin-bottom: 8px; }}
+  .detail-table {{ width: 100%; }}
+  .detail-table th {{ text-align: left; border-bottom: 1px solid #30363d; padding: 6px 8px; }}
+  .detail-table td {{ text-align: left; border-bottom: 1px solid #21262d; padding: 6px 8px; }}
+  .jobs-cell {{ font-size: 11px; vertical-align: top; text-align: left; }}
+  .job-list {{ max-height: 150px; overflow-y: auto; }}
+  .job-entry {{ white-space: nowrap; padding: 1px 0; }}
+  .commits-cell {{ font-size: 11px; vertical-align: top; }}
+  .commit-list {{ max-height: 150px; overflow-y: auto; }}
+  .commit-entry {{ white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+                   max-width: 600px; padding: 1px 0; }}
+  .commit-author {{ color: #8b949e; }}
+  .no-commits {{ color: #484f58; }}
+  .failures-cell {{ font-size: 11px; vertical-align: top; text-align: left; }}
+  .failure-list {{ max-height: 150px; overflow-y: auto; }}
+  .failure-entry {{ white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+                    max-width: 400px; padding: 1px 0; color: #f85149; }}
+  .sha {{ color: #58a6ff; text-decoration: none; font-family: monospace; font-size: 11px; }}
+  .sha:hover {{ text-decoration: underline; }}
+  details {{ margin-top: 20px; }}
+  summary {{ cursor: pointer; color: #8b949e; font-size: 12px; }}
+  pre {{ background: #161b22; padding: 12px; border-radius: 6px; overflow-x: auto;
+         font-size: 11px; max-height: 400px; }}
+</style>
+</head>
+<body>
+<h1>Valkey CI Failure Report</h1>
+<p class="meta">{workflow} · {branch} · last {days} days · generated {generated}</p>
+
+<div class="stats">
+  <div class="stat"><div class="stat-val">{total_runs}</div><div class="stat-label">runs</div></div>
+  <div class="stat"><div class="stat-val">{failed_runs}</div><div class="stat-label">failed</div></div>
+  <div class="stat"><div class="stat-val">{unique_tests}</div><div class="stat-label">unique failures</div></div>
+</div>
+
+<table>
+  <thead>
+    <tr><th class="test-name">Test</th><th class="freq">Freq</th>{date_headers}</tr>
+    <tr><td class="test-name" style="color:#8b949e">Run status</td><td></td>{run_status_cells}</tr>
+  </thead>
+  <tbody>
+    {test_rows}
+  </tbody>
+</table>
+
+<div class="section">
+  <h2>Run Details (newest first)</h2>
+  <table class="detail-table">
+    <thead><tr><th>Date</th><th>Status</th><th>Commit</th><th>#</th><th>Unique Failures</th><th>Failed Jobs</th><th>Commits since prev run</th></tr></thead>
+    <tbody>{run_detail_rows}</tbody>
+  </table>
+</div>
+
+<details>
+  <summary>Raw JSON data</summary>
+  <pre>{report_json}</pre>
+</details>
+</body>
+</html>
+"""
