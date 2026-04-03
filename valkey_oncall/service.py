@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional
 
@@ -159,6 +160,72 @@ class OnCallService:
         # No recognisable failures — mark as unparseable
         self._cache.mark_unparseable(job_id)
         return []
+
+    def failures_summary(self, run_id: int, failed_only: bool = False) -> List[Dict]:
+        """One-shot summary of jobs for a run with first error line per failed job.
+
+        Fetches jobs (and their logs/failures) as needed, then returns a
+        list of dicts with keys: job_id, name, conclusion, first_error.
+        """
+        jobs = self.fetch_jobs(run_id)
+        results: List[Dict] = []
+
+        for job in jobs:
+            conclusion = job.get("conclusion")
+            if failed_only and conclusion != "failure":
+                continue
+
+            first_error: Optional[str] = None
+            if conclusion == "failure":
+                job_id = job["job_id"]
+                # Ensure log is fetched and parsed
+                if not self._cache.has_log(job_id):
+                    try:
+                        self.fetch_log(job_id)
+                    except Exception:
+                        pass
+                if not self._cache.has_failures_for_job(job_id):
+                    try:
+                        self.parse_log(job_id)
+                    except Exception:
+                        pass
+                # Grab the first failure's error summary
+                failures = self._cache.query_failures(job_id=job_id)
+                if failures:
+                    first_error = failures[0].get("error_summary", "")
+
+            results.append({
+                "job_id": job["job_id"],
+                "name": job["name"],
+                "conclusion": conclusion or "running",
+                "first_error": first_error,
+            })
+
+        return results
+
+    def fetch_log_grep(
+        self, job_id: int, pattern: str, context: int = 0,
+    ) -> List[str]:
+        """Fetch a job log and return only lines matching *pattern*.
+
+        *pattern* is compiled as a regex (case-insensitive).  When
+        *context* > 0, surrounding lines are included (like ``grep -C``).
+        """
+        raw_log = self.fetch_log(job_id)
+        lines = raw_log.splitlines()
+        regex = re.compile(pattern, re.IGNORECASE)
+
+        if context <= 0:
+            return [line for line in lines if regex.search(line)]
+
+        # Collect indices of matching lines, then expand with context
+        match_indices = {i for i, line in enumerate(lines) if regex.search(line)}
+        include = set()
+        for idx in match_indices:
+            for offset in range(-context, context + 1):
+                include.add(idx + offset)
+
+        return [lines[i] for i in sorted(include) if 0 <= i < len(lines)]
 
     # ------------------------------------------------------------------
     # Full incremental sync

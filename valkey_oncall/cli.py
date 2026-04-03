@@ -134,16 +134,23 @@ def fetch_jobs(ctx: click.Context, run_id: int) -> None:
 
 @cli.command("fetch-log")
 @click.option("--job-id", required=True, type=int, help="Job ID.")
+@click.option("--grep", "pattern", default=None, help="Filter log lines by regex pattern.")
+@click.option("--context", "-C", "context_lines", default=0, type=int,
+              help="Number of surrounding lines to include with --grep matches.")
 @click.pass_context
-def fetch_log(ctx: click.Context, job_id: int) -> None:
+def fetch_log(ctx: click.Context, job_id: int, pattern: Optional[str], context_lines: int) -> None:
     """Fetch the raw log for a job from GitHub Actions API."""
     try:
         _require_token()
         cache = _make_cache(ctx.obj["db"])
         client = _make_client(ctx.obj["repo"])
         svc = OnCallService(client, cache)
-        raw_log = svc.fetch_log(job_id)
-        click.echo(raw_log)
+        if pattern is not None:
+            lines = svc.fetch_log_grep(job_id, pattern, context=context_lines)
+            click.echo("\n".join(lines))
+        else:
+            raw_log = svc.fetch_log(job_id)
+            click.echo(raw_log)
     except GitHubAPIError as exc:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
@@ -166,6 +173,28 @@ def parse_log(ctx: click.Context, job_id: int) -> None:
         if not failures:
             click.echo("No parseable test failures found.", err=True)
         click.echo(json.dumps(failures, indent=2))
+    except GitHubAPIError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+
+# ------------------------------------------------------------------
+# failures
+# ------------------------------------------------------------------
+
+@cli.command("failures")
+@click.option("--run-id", required=True, type=int, help="Workflow run ID.")
+@click.option("--failed-only", is_flag=True, default=False, help="Show only failed jobs.")
+@click.pass_context
+def failures(ctx: click.Context, run_id: int, failed_only: bool) -> None:
+    """One-shot summary of jobs for a run with first error per failed job."""
+    try:
+        _require_token()
+        cache = _make_cache(ctx.obj["db"])
+        client = _make_client(ctx.obj["repo"])
+        svc = OnCallService(client, cache)
+        summary = svc.failures_summary(run_id, failed_only=failed_only)
+        click.echo(json.dumps(summary, indent=2))
     except GitHubAPIError as exc:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)

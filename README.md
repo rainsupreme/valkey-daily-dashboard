@@ -41,8 +41,15 @@ valkey-oncall fetch-jobs --run-id 23825749975
 # Fetch a job's raw log (requires token)
 valkey-oncall fetch-log --job-id 69448207219
 
+# Fetch a log and filter lines by regex (like grep)
+valkey-oncall fetch-log --job-id 69448207219 --grep "FAILED|error" --context 3
+
 # Parse a cached log for test failures
 valkey-oncall parse-log --job-id 69448207219
+
+# One-shot failure summary for a run — jobs, conclusions, first error per failure
+valkey-oncall failures --run-id 23825749975
+valkey-oncall failures --run-id 23825749975 --failed-only
 
 # Full incremental sync — fetch runs, jobs, logs, parse failures (requires token)
 valkey-oncall sync --workflow daily --since 2026-03-25
