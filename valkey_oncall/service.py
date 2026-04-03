@@ -116,9 +116,10 @@ class OnCallService:
         """Fetch jobs for a run from the API if not cached, return all.
 
         Ensures jobs are fetched and cached, then returns the full set
-        of cached jobs for the run.
+        of cached jobs for the run.  If previously cached jobs are still
+        in progress, re-fetches from the API to pick up final results.
         """
-        if not self._cache.has_jobs_for_run(run_id):
+        if not self._cache.has_jobs_for_run(run_id) or self._cache.has_incomplete_jobs(run_id):
             api_jobs = self._client.get_jobs_for_run(run_id)
             mapped: List[Dict] = [_map_job(j) for j in api_jobs]
             if mapped:

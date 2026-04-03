@@ -180,9 +180,17 @@ class Cache:
         ).fetchone()
         return row is not None
 
+    def has_incomplete_jobs(self, run_id: int) -> bool:
+        """Return True if any cached job for *run_id* is still in progress."""
+        row = self._conn.execute(
+            "SELECT 1 FROM jobs WHERE run_id = ? AND status != 'completed' LIMIT 1",
+            (run_id,),
+        ).fetchone()
+        return row is not None
+
     def store_jobs(self, run_id: int, jobs: List[Dict]) -> None:
         self._conn.executemany(
-            """INSERT OR IGNORE INTO jobs
+            """INSERT OR REPLACE INTO jobs
                (job_id, run_id, name, status, conclusion, raw_json)
                VALUES (:job_id, :run_id, :name, :status, :conclusion, :raw_json)""",
             [
