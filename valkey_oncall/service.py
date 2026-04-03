@@ -42,10 +42,11 @@ def _compute_duration(run: Dict) -> Optional[int]:
         return None
 
 
-def _map_run(api_run: Dict) -> Dict:
+def _map_run(api_run: Dict, repo: str) -> Dict:
     """Map a GitHub API workflow-run dict to our cache schema."""
     return {
         "run_id": api_run["id"],
+        "repo": repo,
         "workflow_file": api_run.get("path", "").rsplit("/", 1)[-1] if api_run.get("path") else api_run.get("name", ""),
         "status": api_run.get("conclusion") or api_run.get("status", "unknown"),
         "branch": api_run.get("head_branch", ""),
@@ -99,7 +100,7 @@ class OnCallService:
         )
         new_runs: List[Dict] = []
         for raw in api_runs:
-            run = _map_run(raw)
+            run = _map_run(raw, self._client.repo)
             if not self._cache.has_run(run["run_id"]):
                 new_runs.append(run)
 
@@ -107,6 +108,7 @@ class OnCallService:
             self._cache.store_runs(new_runs)
 
         return self._cache.query_runs(
+            repo=self._client.repo,
             workflow=workflow_file, branch=branch, since=since, until=until,
         )
 
@@ -205,7 +207,7 @@ class OnCallService:
 
             # Snapshot cached run IDs before fetching so we can count new ones
             try:
-                existing_run_ids = {r["run_id"] for r in self._cache.query_runs(workflow=workflow_file)}
+                existing_run_ids = {r["run_id"] for r in self._cache.query_runs(repo=self._client.repo, workflow=workflow_file)}
                 api_runs = self._client.get_workflow_runs(
                     workflow_file=workflow_file,
                     branch=branch,
@@ -214,7 +216,7 @@ class OnCallService:
                 )
                 new_runs: List[Dict] = []
                 for raw in api_runs:
-                    run = _map_run(raw)
+                    run = _map_run(raw, self._client.repo)
                     if run["run_id"] not in existing_run_ids:
                         new_runs.append(run)
                 if new_runs:

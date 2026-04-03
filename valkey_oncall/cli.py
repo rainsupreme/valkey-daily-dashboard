@@ -11,7 +11,7 @@ from typing import Optional
 import click
 
 from valkey_oncall.cache import Cache
-from valkey_oncall.github_client import GitHubActionsClient, GitHubAPIError
+from valkey_oncall.github_client import GitHubActionsClient, GitHubAPIError, DEFAULT_REPO
 from valkey_oncall.service import OnCallService
 
 
@@ -22,7 +22,7 @@ def _make_cache(db_path: str) -> Cache:
     return Cache(str(Path(db_path).expanduser()))
 
 
-def _make_client() -> GitHubActionsClient:
+def _make_client(repo: str = DEFAULT_REPO) -> GitHubActionsClient:
     """Build a GitHubActionsClient, warning if no token is set."""
     token = os.environ.get("GITHUB_TOKEN")
     if not token:
@@ -33,7 +33,7 @@ def _make_client() -> GitHubActionsClient:
             "(5,000 requests/hour).",
             err=True,
         )
-    return GitHubActionsClient(token=token)
+    return GitHubActionsClient(token=token, repo=repo)
 
 
 def _require_token() -> str:
@@ -59,16 +59,23 @@ def _require_token() -> str:
     help="Path to the SQLite cache database.",
 )
 @click.option(
+    "--repo",
+    default=DEFAULT_REPO,
+    show_default=True,
+    help="GitHub repository (owner/name).",
+)
+@click.option(
     "-v", "--verbose",
     is_flag=True,
     default=False,
     help="Print progress messages to stderr during operations.",
 )
 @click.pass_context
-def cli(ctx: click.Context, db: str, verbose: bool) -> None:
+def cli(ctx: click.Context, db: str, repo: str, verbose: bool) -> None:
     """Valkey OnCall CLI toolkit for monitoring CI test health."""
     ctx.ensure_object(dict)
     ctx.obj["db"] = db
+    ctx.obj["repo"] = repo
     ctx.obj["verbose"] = verbose
 
 
@@ -92,7 +99,7 @@ def fetch_runs(
     """Fetch workflow runs from GitHub Actions API."""
     try:
         cache = _make_cache(ctx.obj["db"])
-        client = _make_client()
+        client = _make_client(ctx.obj["repo"])
         svc = OnCallService(client, cache)
         runs = svc.fetch_runs(workflow, branch=branch, since=since, until=until_)
         click.echo(json.dumps(runs, indent=2))
@@ -112,7 +119,7 @@ def fetch_jobs(ctx: click.Context, run_id: int) -> None:
     """Fetch jobs for a workflow run from GitHub Actions API."""
     try:
         cache = _make_cache(ctx.obj["db"])
-        client = _make_client()
+        client = _make_client(ctx.obj["repo"])
         svc = OnCallService(client, cache)
         jobs = svc.fetch_jobs(run_id)
         click.echo(json.dumps(jobs, indent=2))
@@ -133,7 +140,7 @@ def fetch_log(ctx: click.Context, job_id: int) -> None:
     try:
         _require_token()
         cache = _make_cache(ctx.obj["db"])
-        client = _make_client()
+        client = _make_client(ctx.obj["repo"])
         svc = OnCallService(client, cache)
         raw_log = svc.fetch_log(job_id)
         click.echo(raw_log)
@@ -153,7 +160,7 @@ def parse_log(ctx: click.Context, job_id: int) -> None:
     """Parse a cached job log for test failures."""
     try:
         cache = _make_cache(ctx.obj["db"])
-        client = _make_client()
+        client = _make_client(ctx.obj["repo"])
         svc = OnCallService(client, cache)
         failures = svc.parse_log(job_id)
         if not failures:
@@ -249,7 +256,7 @@ def sync(
     try:
         _require_token()
         cache = _make_cache(ctx.obj["db"])
-        client = _make_client()
+        client = _make_client(ctx.obj["repo"])
         svc = OnCallService(client, cache)
 
         progress = None
@@ -274,30 +281,72 @@ def sync(
 @click.option("--days", default=14, show_default=True, help="Number of days of history.")
 @click.option("--branch", default="unstable", show_default=True, help="Branch to report on.")
 @click.option("--workflow", default="daily", show_default=True, help="Workflow type (daily or weekly).")
-@click.option("--output", "-o", default="report.html", show_default=True, help="Output HTML file path.")
+@click.option(
+    "--format", "-f", "fmt",
+    type=click.Choice(["html", "markdown", "slack"], case_sensitive=False),
+    default="html", show_default=True,
+    help="Output format.",
+)
+@click.option("--output", "-o", default=None, help="Output file path (default depends on format).")
+@click.option("--no-sync", is_flag=True, default=False, help="Skip syncing latest data before generating the report.")
 @click.pass_context
 def report(
     ctx: click.Context,
     days: int,
     branch: str,
     workflow: str,
+    fmt: str,
     output: str,
+    no_sync: bool,
 ) -> None:
-    """Generate an HTML failure trend report from cached data."""
-    from valkey_oncall.report import generate_report_data, render_html
+    """Generate a failure trend report, syncing latest data first."""
+    from valkey_oncall.report import (
+        generate_report_data, render_html, render_markdown, render_slack,
+    )
 
     cache = _make_cache(ctx.obj["db"])
+    repo = ctx.obj["repo"]
     workflow_file = {"daily": "daily.yml", "weekly": "weekly.yml"}.get(workflow, workflow)
 
-    # Use a client for fetching inter-run commits if a token is available
     token = os.environ.get("GITHUB_TOKEN")
-    client = GitHubActionsClient(token=token) if token else None
+    client = GitHubActionsClient(token=token, repo=repo) if token else None
 
-    click.echo(f"Generating report for {workflow} / {branch} (last {days} days)...", err=True)
-    data = generate_report_data(cache, days=days, branch=branch, workflow=workflow_file, client=client)
-    html_content = render_html(data)
+    # Sync latest data unless --no-sync is passed
+    if not no_sync:
+        if not token:
+            click.echo(
+                "Warning: GITHUB_TOKEN not set, skipping sync. "
+                "Use --no-sync to silence this warning.",
+                err=True,
+            )
+        else:
+            verbose = ctx.obj.get("verbose")
+            progress = (lambda msg: click.echo(msg, err=True)) if verbose else None
+            click.echo(f"Syncing latest data for {repo} {workflow} / {branch}...", err=True)
+            svc = OnCallService(client, cache)
+            sync_summary = svc.sync(
+                workflow=workflow_file, branch=branch, progress=progress,
+            )
+            click.echo(
+                f"Sync: {sync_summary['new_runs_fetched']} new runs, "
+                f"{sync_summary['new_failures_parsed']} new failures parsed",
+                err=True,
+            )
+            if sync_summary["errors"]:
+                for err in sync_summary["errors"]:
+                    click.echo(f"  sync error: {err}", err=True)
 
-    Path(output).write_text(html_content)
+    click.echo(f"Generating report for {repo} {workflow} / {branch} (last {days} days)...", err=True)
+    data = generate_report_data(cache, days=days, branch=branch, workflow=workflow_file, repo=repo, client=client)
+
+    renderers = {"html": render_html, "markdown": render_markdown, "slack": render_slack}
+    content = renderers[fmt](data)
+
+    default_ext = {"html": ".html", "markdown": ".md", "slack": ".txt"}
+    if output is None:
+        output = f"report{default_ext[fmt]}"
+
+    Path(output).write_text(content)
     click.echo(f"Report written to {output}", err=True)
     click.echo(json.dumps(data["summary"], indent=2))
 

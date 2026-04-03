@@ -16,6 +16,7 @@ def generate_report_data(
     days: int = 14,
     branch: str = "unstable",
     workflow: str = "daily.yml",
+    repo: str = "valkey-io/valkey",
     client=None,
 ) -> Dict:
     """Build the data structure for the failure trend report.
@@ -28,7 +29,7 @@ def generate_report_data(
     )
 
     all_runs = cache.query_runs(
-        workflow=workflow, branch=branch, since=since
+        repo=repo, workflow=workflow, branch=branch, since=since
     )
     # Keep only completed scheduled runs (one per day, skip duplicates)
     seen_dates: set[str] = set()
@@ -131,6 +132,7 @@ def generate_report_data(
         },
         "summary": {
             "days": days,
+            "repo": repo,
             "branch": branch,
             "workflow": workflow,
             "total_runs": len(run_details),
@@ -148,6 +150,7 @@ def render_html(data: Dict) -> str:
     dates = data["dates"]
     tests = data["tests"]
     runs = data["runs"]
+    repo = summary.get("repo", "valkey-io/valkey")
 
     # Build date headers — just day number, with full date on hover
     date_headers = ""
@@ -208,14 +211,14 @@ def render_html(data: Dict) -> str:
         else:
             jobs_html = "—"
         sha = run.get("commit_sha", "")
-        sha_link = _commit_link(sha) if sha else "—"
+        sha_link = _commit_link(sha, repo) if sha else "—"
 
         # Commits since previous run
         commits = run.get("commits_since_prev", [])
         if commits:
             commits_html = '<div class="commit-list">'
             for c in commits:
-                c_link = _commit_link(c["sha"])
+                c_link = _commit_link(c["sha"], repo)
                 author = html.escape(c.get("author", "")[:20])
                 msg = html.escape(c.get("message", "")[:80])
                 commits_html += f'<div class="commit-entry">{c_link} <span class="commit-author">{author}</span> {msg}</div>'
@@ -234,6 +237,7 @@ def render_html(data: Dict) -> str:
         </tr>"""
 
     return _HTML_TEMPLATE.format(
+        repo=html.escape(repo),
         branch=html.escape(summary["branch"]),
         workflow=html.escape(summary["workflow"]),
         days=summary["days"],
@@ -249,6 +253,135 @@ def render_html(data: Dict) -> str:
     )
 
 
+def render_markdown(data: Dict) -> str:
+    """Render the report data as GitHub-Flavored Markdown."""
+    summary = data["summary"]
+    repo = summary.get("repo", "valkey-io/valkey")
+    dates = data["dates"]
+    tests = data["tests"]
+    runs = data["runs"]
+
+    lines: List[str] = []
+    lines.append(f"# Valkey CI Failure Report")
+    lines.append("")
+    lines.append(
+        f"`{summary['workflow']}` · `{summary['branch']}` · `{repo}` · "
+        f"last {summary['days']} days · generated "
+        f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+    )
+    lines.append("")
+    lines.append(
+        f"| Runs | Failed | Unique failures |\n"
+        f"|------|--------|----------------|\n"
+        f"| {summary['total_runs']} | {summary['failed_runs']} "
+        f"| {summary['unique_tests_failed']} |"
+    )
+
+    # Failure heatmap table
+    if tests:
+        lines.append("")
+        lines.append("## Failure Heatmap")
+        lines.append("")
+        day_labels = [d[5:] for d in dates]  # "04-01" from "2026-04-01"
+        header = "| Test | Freq | " + " | ".join(day_labels) + " |"
+        sep = "|------|------|" + "|".join("---" for _ in dates) + "|"
+        lines.append(header)
+        lines.append(sep)
+        for test_name, info in tests.items():
+            short = _short_test_name(test_name)
+            freq = f'{info["days_failed"]}/{len(dates)}d'
+            cells = []
+            for d in dates:
+                entry = info["timeline"][d]
+                if entry is None:
+                    cells.append("·")
+                else:
+                    cells.append(f"**{entry['count']}**")
+            lines.append(f"| `{short}` | {freq} | " + " | ".join(cells) + " |")
+
+    # Run details
+    lines.append("")
+    lines.append("## Run Details (newest first)")
+    lines.append("")
+    lines.append("| Date | Status | Commit | # | Failures |")
+    lines.append("|------|--------|--------|---|----------|")
+    for run in reversed(runs):
+        status = "✅" if run["status"] == "success" else f"❌ {run['failed_jobs']}/{run['total_jobs']}"
+        sha = run.get("commit_sha", "")
+        sha_md = f"[`{sha[:7]}`](https://github.com/{repo}/commit/{sha})" if sha else "—"
+        failures = ", ".join(
+            f"`{_short_test_name(n)}`" for n in run.get("failure_names", [])[:5]
+        )
+        if len(run.get("failure_names", [])) > 5:
+            failures += f" +{len(run['failure_names']) - 5} more"
+        if not failures:
+            failures = "—"
+        lines.append(f"| {run['date']} | {status} | {sha_md} | {run['unique_failures']} | {failures} |")
+
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_slack(data: Dict) -> str:
+    """Render the report data as Slack mrkdwn."""
+    summary = data["summary"]
+    repo = summary.get("repo", "valkey-io/valkey")
+    dates = data["dates"]
+    tests = data["tests"]
+    runs = data["runs"]
+
+    lines: List[str] = []
+    lines.append(f"*Valkey CI Failure Report*")
+    lines.append(
+        f"`{summary['workflow']}` · `{summary['branch']}` · `{repo}` · "
+        f"last {summary['days']} days · "
+        f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+    )
+    lines.append("")
+    lines.append(
+        f"*{summary['total_runs']}* runs · "
+        f"*{summary['failed_runs']}* failed · "
+        f"*{summary['unique_tests_failed']}* unique failures"
+    )
+
+    # Top failing tests
+    if tests:
+        lines.append("")
+        lines.append("*Top Failing Tests:*")
+        for test_name, info in list(tests.items())[:15]:
+            short = _short_test_name(test_name)
+            freq = f'{info["days_failed"]}/{len(dates)}d'
+            lines.append(f"• `{short}` — {freq}, {info['total']} total hits")
+
+    # Recent runs
+    lines.append("")
+    lines.append("*Recent Runs:*")
+    for run in list(reversed(runs))[:10]:
+        status = ":white_check_mark:" if run["status"] == "success" else ":x:"
+        sha = run.get("commit_sha", "")
+        sha_link = (
+            f"<https://github.com/{repo}/commit/{sha}|{sha[:7]}>"
+            if sha else "—"
+        )
+        detail = ""
+        if run["unique_failures"] > 0:
+            names = ", ".join(
+                f"`{_short_test_name(n)}`"
+                for n in run.get("failure_names", [])[:3]
+            )
+            extra = len(run.get("failure_names", [])) - 3
+            if extra > 0:
+                names += f" +{extra} more"
+            detail = f" — {names}"
+        lines.append(
+            f"{status} {run['date']} {sha_link} "
+            f"({run['failed_jobs']}/{run['total_jobs']} jobs failed){detail}"
+        )
+
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _short_test_name(name: str) -> str:
     """Shorten a test name for display in the grid."""
     # Strip " in tests/..." suffix for the grid, keep it in the tooltip
@@ -262,13 +395,13 @@ def _short_test_name(name: str) -> str:
     return name
 
 
-def _commit_link(sha: str) -> str:
+def _commit_link(sha: str, repo: str = "valkey-io/valkey") -> str:
     """Render a short commit SHA as a GitHub link."""
     if not sha:
         return ""
     short = sha[:7]
     return (
-        f'<a href="https://github.com/valkey-io/valkey/commit/{sha}" '
+        f'<a href="https://github.com/{repo}/commit/{sha}" '
         f'class="sha" title="{sha}">{short}</a>'
     )
 
@@ -344,7 +477,7 @@ _HTML_TEMPLATE = """\
 </head>
 <body>
 <h1>Valkey CI Failure Report</h1>
-<p class="meta">{workflow} · {branch} · last {days} days · generated {generated}</p>
+<p class="meta">{workflow} · {branch} · {repo} · last {days} days · generated {generated}</p>
 
 <div class="stats">
   <div class="stat"><div class="stat-val">{total_runs}</div><div class="stat-label">runs</div></div>

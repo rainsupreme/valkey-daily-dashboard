@@ -45,7 +45,7 @@ def _api_job(job_id: int, conclusion: str = "failure") -> Dict:
 def _make_service(temp_db_path: str, client: Optional[MagicMock] = None) -> OnCallService:
     cache = Cache(temp_db_path)
     if client is None:
-        client = MagicMock()
+        client = MagicMock(repo="valkey-io/valkey")
     return OnCallService(client, cache)
 
 
@@ -59,9 +59,9 @@ class TestFetchRunsReturnsCachedAndNew:
     def test_returns_cached_and_new(self, temp_db_path: str) -> None:
         cache = Cache(temp_db_path)
         # Pre-populate cache with run 1
-        cache.store_runs([_map_run(_api_run(1))])
+        cache.store_runs([_map_run(_api_run(1), "valkey-io/valkey")])
 
-        client = MagicMock()
+        client = MagicMock(repo="valkey-io/valkey")
         # API returns run 1 (cached) and run 2 (new)
         client.get_workflow_runs.return_value = [_api_run(1), _api_run(2)]
 
@@ -75,9 +75,9 @@ class TestFetchRunsReturnsCachedAndNew:
 
     def test_all_cached_returns_cached(self, temp_db_path: str) -> None:
         cache = Cache(temp_db_path)
-        cache.store_runs([_map_run(_api_run(1))])
+        cache.store_runs([_map_run(_api_run(1), "valkey-io/valkey")])
 
-        client = MagicMock()
+        client = MagicMock(repo="valkey-io/valkey")
         client.get_workflow_runs.return_value = [_api_run(1)]
 
         svc = OnCallService(client, cache)
@@ -91,10 +91,10 @@ class TestFetchJobsReturnsCached:
 
     def test_returns_cached_jobs_without_api_call(self, temp_db_path: str) -> None:
         cache = Cache(temp_db_path)
-        cache.store_runs([_map_run(_api_run(1))])
+        cache.store_runs([_map_run(_api_run(1), "valkey-io/valkey")])
         cache.store_jobs(1, [_map_job(_api_job(100))])
 
-        client = MagicMock()
+        client = MagicMock(repo="valkey-io/valkey")
         svc = OnCallService(client, cache)
         result = svc.fetch_jobs(1)
 
@@ -104,9 +104,9 @@ class TestFetchJobsReturnsCached:
 
     def test_fetches_and_returns_when_not_cached(self, temp_db_path: str) -> None:
         cache = Cache(temp_db_path)
-        cache.store_runs([_map_run(_api_run(1))])
+        cache.store_runs([_map_run(_api_run(1), "valkey-io/valkey")])
 
-        client = MagicMock()
+        client = MagicMock(repo="valkey-io/valkey")
         client.get_jobs_for_run.return_value = [_api_job(200), _api_job(201)]
 
         svc = OnCallService(client, cache)
@@ -121,11 +121,11 @@ class TestFetchLogReturnsCached:
 
     def test_returns_cached_log(self, temp_db_path: str) -> None:
         cache = Cache(temp_db_path)
-        cache.store_runs([_map_run(_api_run(1))])
+        cache.store_runs([_map_run(_api_run(1), "valkey-io/valkey")])
         cache.store_jobs(1, [_map_job(_api_job(100))])
         cache.store_log(100, "cached log content")
 
-        client = MagicMock()
+        client = MagicMock(repo="valkey-io/valkey")
         svc = OnCallService(client, cache)
         log = svc.fetch_log(100)
 
@@ -134,10 +134,10 @@ class TestFetchLogReturnsCached:
 
     def test_fetches_from_api_when_not_cached(self, temp_db_path: str) -> None:
         cache = Cache(temp_db_path)
-        cache.store_runs([_map_run(_api_run(1))])
+        cache.store_runs([_map_run(_api_run(1), "valkey-io/valkey")])
         cache.store_jobs(1, [_map_job(_api_job(100))])
 
-        client = MagicMock()
+        client = MagicMock(repo="valkey-io/valkey")
         client.get_job_log.return_value = "fresh log"
 
         svc = OnCallService(client, cache)
@@ -154,7 +154,7 @@ class TestSyncOrchestration:
 
     def test_full_sync_pipeline(self, temp_db_path: str) -> None:
         cache = Cache(temp_db_path)
-        client = MagicMock()
+        client = MagicMock(repo="valkey-io/valkey")
 
         # API returns one failed run
         client.get_workflow_runs.return_value = [_api_run(10, conclusion="failure")]
@@ -180,7 +180,7 @@ class TestSyncOrchestration:
 
     def test_sync_collects_nonfatal_errors(self, temp_db_path: str) -> None:
         cache = Cache(temp_db_path)
-        client = MagicMock()
+        client = MagicMock(repo="valkey-io/valkey")
 
         client.get_workflow_runs.return_value = [_api_run(20, conclusion="failure")]
         client.get_jobs_for_run.return_value = [_api_job(600, conclusion="failure")]
@@ -198,7 +198,7 @@ class TestSyncOrchestration:
 
     def test_sync_both_workflows_when_none_specified(self, temp_db_path: str) -> None:
         cache = Cache(temp_db_path)
-        client = MagicMock()
+        client = MagicMock(repo="valkey-io/valkey")
         client.get_workflow_runs.return_value = []
 
         svc = OnCallService(client, cache)
@@ -211,7 +211,7 @@ class TestSyncOrchestration:
 
     def test_sync_skips_success_runs(self, temp_db_path: str) -> None:
         cache = Cache(temp_db_path)
-        client = MagicMock()
+        client = MagicMock(repo="valkey-io/valkey")
 
         # Only successful runs — no jobs should be fetched
         client.get_workflow_runs.return_value = [_api_run(30, conclusion="success")]
@@ -277,12 +277,12 @@ class TestIncrementalSyncNeverRefetchesCached:
 
         cache = Cache(db_path)
         # Pre-populate cache with the "cached" runs
-        cache.store_runs([_map_run(_api_run(rid)) for rid in cached_ids])
+        cache.store_runs([_map_run(_api_run(rid), "valkey-io/valkey") for rid in cached_ids])
 
         # API returns ALL runs (cached + new)
         all_api_runs = [_api_run(rid) for rid in sorted(cached_ids | new_ids)]
 
-        client = MagicMock()
+        client = MagicMock(repo="valkey-io/valkey")
         client.get_workflow_runs.return_value = all_api_runs
 
         svc = OnCallService(client, cache)
@@ -304,14 +304,14 @@ class TestIncrementalSyncNeverRefetchesCached:
         all_run_ids = sorted(cached_run_ids | new_run_ids)
 
         # Store all runs in cache (they need to exist for FK)
-        cache.store_runs([_map_run(_api_run(rid, conclusion="failure")) for rid in all_run_ids])
+        cache.store_runs([_map_run(_api_run(rid, conclusion="failure"), "valkey-io/valkey") for rid in all_run_ids])
 
         # Pre-populate jobs for the "cached" runs
         for rid in cached_run_ids:
             job_id = rid * 1000  # deterministic job ID
             cache.store_jobs(rid, [_map_job(_api_job(job_id))])
 
-        client = MagicMock()
+        client = MagicMock(repo="valkey-io/valkey")
         # For new runs, return a job when asked
         client.get_jobs_for_run.side_effect = lambda run_id: [_api_job(run_id * 1000 + 1)]
 
@@ -338,14 +338,14 @@ class TestIncrementalSyncNeverRefetchesCached:
 
         # We need a run to satisfy FK constraints
         run_id = 99999
-        cache.store_runs([_map_run(_api_run(run_id))])
+        cache.store_runs([_map_run(_api_run(run_id), "valkey-io/valkey")])
         cache.store_jobs(run_id, [_map_job(_api_job(jid)) for jid in all_job_ids])
 
         # Pre-populate logs for cached jobs
         for jid in cached_job_ids:
             cache.store_log(jid, f"cached log for {jid}")
 
-        client = MagicMock()
+        client = MagicMock(repo="valkey-io/valkey")
         client.get_job_log.side_effect = lambda job_id: f"fresh log for {job_id}"
 
         svc = OnCallService(client, cache)
@@ -383,7 +383,7 @@ class TestSyncRespectsWorkflowTypeFilter:
         # Override the path so _map_run produces the correct workflow_file
         api_run["path"] = f".github/workflows/{expected_file}"
 
-        client = MagicMock()
+        client = MagicMock(repo="valkey-io/valkey")
         client.get_workflow_runs.return_value = [api_run]
 
         svc = OnCallService(client, cache)

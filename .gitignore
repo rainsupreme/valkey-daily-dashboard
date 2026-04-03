@@ -8,4 +8,4 @@ build/
 .hypothesis/
 .kiro/
 *.db
-valkey-report.html
+valkey-report.*

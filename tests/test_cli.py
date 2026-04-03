@@ -63,7 +63,7 @@ def _populate_cache(db_path: str, num_runs: int, num_jobs_per_run: int,
     """Populate a cache DB with sample data for query commands."""
     cache = Cache(db_path)
     for i in range(1, num_runs + 1):
-        run = _map_run(_api_run(i))
+        run = _map_run(_api_run(i), "valkey-io/valkey")
         cache.store_runs([run])
         jobs = []
         for j in range(1, num_jobs_per_run + 1):
@@ -166,7 +166,7 @@ class TestAllCommandOutputIsValidJSON:
             rid = run["id"]
             api_jobs_map[rid] = [_api_job(rid * 1000 + 1, conclusion="failure")]
 
-        mock_client = MagicMock()
+        mock_client = MagicMock(repo="valkey-io/valkey")
         mock_client.get_workflow_runs.return_value = api_runs
         mock_client.get_jobs_for_run.side_effect = lambda rid: api_jobs_map.get(rid, [])
         mock_client.get_job_log.return_value = "some log content\n"
@@ -187,7 +187,7 @@ class TestAllCommandOutputIsValidJSON:
         db_path = _fresh_db()
         api_runs = [_api_run(i) for i in range(1, num_runs + 1)]
 
-        mock_client = MagicMock()
+        mock_client = MagicMock(repo="valkey-io/valkey")
         mock_client.get_workflow_runs.return_value = api_runs
 
         runner = CliRunner(env={"GITHUB_TOKEN": "fake-token"})
@@ -205,11 +205,11 @@ class TestAllCommandOutputIsValidJSON:
         db_path = _fresh_db()
         # Pre-populate a run so the FK constraint is satisfied
         cache = Cache(db_path)
-        cache.store_runs([_map_run(_api_run(1))])
+        cache.store_runs([_map_run(_api_run(1), "valkey-io/valkey")])
 
         api_jobs = [_api_job(1000 + j) for j in range(1, num_jobs + 1)]
 
-        mock_client = MagicMock()
+        mock_client = MagicMock(repo="valkey-io/valkey")
         mock_client.get_jobs_for_run.return_value = api_jobs
 
         runner = CliRunner(env={"GITHUB_TOKEN": "fake-token"})
@@ -228,7 +228,7 @@ class TestAllCommandOutputIsValidJSON:
         cache = Cache(db_path)
 
         # Store a run and job so FK constraints are met
-        cache.store_runs([_map_run(_api_run(1))])
+        cache.store_runs([_map_run(_api_run(1), "valkey-io/valkey")])
         cache.store_jobs(1, [_map_job(_api_job(100))])
 
         # Generate a random log — may or may not contain failure patterns
@@ -241,7 +241,7 @@ class TestAllCommandOutputIsValidJSON:
 
         cache.store_log(100, log_text)
 
-        mock_client = MagicMock()
+        mock_client = MagicMock(repo="valkey-io/valkey")
         # mix_stderr=False keeps stderr separate so JSON on stdout is clean
         runner = CliRunner(env={"GITHUB_TOKEN": "fake-token"}, mix_stderr=False)
         with patch("valkey_oncall.cli._make_client", return_value=mock_client):
@@ -365,7 +365,7 @@ class TestCLIIntegration:
     # 1. fetch-runs success
     def test_fetch_runs_success(self) -> None:
         db_path = _fresh_db()
-        mock_client = MagicMock()
+        mock_client = MagicMock(repo="valkey-io/valkey")
         mock_client.get_workflow_runs.return_value = [_api_run(1), _api_run(2)]
 
         runner = CliRunner(env={"GITHUB_TOKEN": "fake-token"})
@@ -379,7 +379,7 @@ class TestCLIIntegration:
     # 2. fetch-runs API error
     def test_fetch_runs_api_error(self) -> None:
         db_path = _fresh_db()
-        mock_client = MagicMock()
+        mock_client = MagicMock(repo="valkey-io/valkey")
         mock_client.get_workflow_runs.side_effect = GitHubAPIError(500, "Internal Server Error")
 
         runner = CliRunner(env={"GITHUB_TOKEN": "fake-token"}, mix_stderr=False)
@@ -394,9 +394,9 @@ class TestCLIIntegration:
         db_path = _fresh_db()
         # Pre-populate a run so FK constraint is satisfied
         cache = Cache(db_path)
-        cache.store_runs([_map_run(_api_run(1))])
+        cache.store_runs([_map_run(_api_run(1), "valkey-io/valkey")])
 
-        mock_client = MagicMock()
+        mock_client = MagicMock(repo="valkey-io/valkey")
         mock_client.get_jobs_for_run.return_value = [_api_job(1001), _api_job(1002)]
 
         runner = CliRunner(env={"GITHUB_TOKEN": "fake-token"})
@@ -410,7 +410,7 @@ class TestCLIIntegration:
     # 4. fetch-jobs API error
     def test_fetch_jobs_api_error(self) -> None:
         db_path = _fresh_db()
-        mock_client = MagicMock()
+        mock_client = MagicMock(repo="valkey-io/valkey")
         mock_client.get_jobs_for_run.side_effect = GitHubAPIError(404, "Run not found")
 
         runner = CliRunner(env={"GITHUB_TOKEN": "fake-token"}, mix_stderr=False)
@@ -424,10 +424,10 @@ class TestCLIIntegration:
     def test_fetch_log_success(self) -> None:
         db_path = _fresh_db()
         cache = Cache(db_path)
-        cache.store_runs([_map_run(_api_run(1))])
+        cache.store_runs([_map_run(_api_run(1), "valkey-io/valkey")])
         cache.store_jobs(1, [_map_job(_api_job(1001))])
 
-        mock_client = MagicMock()
+        mock_client = MagicMock(repo="valkey-io/valkey")
         mock_client.get_job_log.return_value = "raw log line 1\nraw log line 2\n"
 
         runner = CliRunner(env={"GITHUB_TOKEN": "fake-token"})
@@ -441,11 +441,11 @@ class TestCLIIntegration:
     def test_parse_log_success(self) -> None:
         db_path = _fresh_db()
         cache = Cache(db_path)
-        cache.store_runs([_map_run(_api_run(1))])
+        cache.store_runs([_map_run(_api_run(1), "valkey-io/valkey")])
         cache.store_jobs(1, [_map_job(_api_job(1001))])
         cache.store_log(1001, "[err]: test_acl_setuser in tests/unit.tcl\nExpected OK but got ERR\n")
 
-        mock_client = MagicMock()
+        mock_client = MagicMock(repo="valkey-io/valkey")
         runner = CliRunner(env={"GITHUB_TOKEN": "fake-token"}, mix_stderr=False)
         with patch("valkey_oncall.cli._make_client", return_value=mock_client):
             result = runner.invoke(cli, ["--db", db_path, "parse-log", "--job-id", "1001"])
@@ -503,7 +503,7 @@ class TestCLIIntegration:
     # 10. sync JSON structure
     def test_sync_json_structure(self) -> None:
         db_path = _fresh_db()
-        mock_client = MagicMock()
+        mock_client = MagicMock(repo="valkey-io/valkey")
         mock_client.get_workflow_runs.return_value = [_api_run(1, conclusion="failure")]
         mock_client.get_jobs_for_run.return_value = [_api_job(1001, conclusion="failure")]
         mock_client.get_job_log.return_value = "some log\n"
@@ -532,7 +532,7 @@ class TestCLIIntegration:
     # 12. stderr warning when GITHUB_TOKEN is absent (fetch-runs still works)
     def test_stderr_warning_when_no_github_token(self) -> None:
         db_path = _fresh_db()
-        mock_client = MagicMock()
+        mock_client = MagicMock(repo="valkey-io/valkey")
         mock_client.get_workflow_runs.return_value = []
 
         runner = CliRunner(env={"GITHUB_TOKEN": ""}, mix_stderr=False)

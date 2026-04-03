@@ -11,6 +11,7 @@ from typing import Dict, List, Optional
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS workflow_runs (
     run_id        INTEGER PRIMARY KEY,
+    repo          TEXT    NOT NULL DEFAULT 'valkey-io/valkey',
     workflow_file TEXT    NOT NULL,
     status        TEXT    NOT NULL,
     branch        TEXT    NOT NULL,
@@ -60,6 +61,15 @@ CREATE INDEX IF NOT EXISTS idx_failures_name ON test_failures(test_name);
 """
 
 
+_MIGRATIONS = [
+    # Migration 1: add repo column to existing databases
+    (
+        "ALTER TABLE workflow_runs ADD COLUMN repo TEXT NOT NULL DEFAULT 'valkey-io/valkey'",
+        "CREATE INDEX IF NOT EXISTS idx_runs_repo ON workflow_runs(repo)",
+    ),
+]
+
+
 def _now_iso() -> str:
     """Return current UTC time as ISO 8601 string."""
     return datetime.now(timezone.utc).isoformat()
@@ -74,6 +84,24 @@ class Cache:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(_SCHEMA_SQL)
+        self._migrate()
+        # Ensure repo index exists (for both new and migrated databases)
+        try:
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_repo ON workflow_runs(repo)")
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass
+
+    def _migrate(self) -> None:
+        """Apply schema migrations for existing databases."""
+        for statements in _MIGRATIONS:
+            try:
+                for sql in statements:
+                    self._conn.execute(sql)
+                self._conn.commit()
+            except sqlite3.OperationalError:
+                # Column/index already exists — skip
+                pass
 
     # ------------------------------------------------------------------
     # Workflow Runs
@@ -88,11 +116,12 @@ class Cache:
     def store_runs(self, runs: List[Dict]) -> None:
         self._conn.executemany(
             """INSERT OR IGNORE INTO workflow_runs
-               (run_id, workflow_file, status, branch, commit_sha, run_date, duration_secs, raw_json)
-               VALUES (:run_id, :workflow_file, :status, :branch, :commit_sha, :run_date, :duration_secs, :raw_json)""",
+               (run_id, repo, workflow_file, status, branch, commit_sha, run_date, duration_secs, raw_json)
+               VALUES (:run_id, :repo, :workflow_file, :status, :branch, :commit_sha, :run_date, :duration_secs, :raw_json)""",
             [
                 {
                     "run_id": r["run_id"],
+                    "repo": r.get("repo", "valkey-io/valkey"),
                     "workflow_file": r["workflow_file"],
                     "status": r["status"],
                     "branch": r["branch"],
@@ -108,6 +137,7 @@ class Cache:
 
     def query_runs(
         self,
+        repo: Optional[str] = None,
         workflow: Optional[str] = None,
         status: Optional[str] = None,
         branch: Optional[str] = None,
@@ -116,6 +146,9 @@ class Cache:
     ) -> List[Dict]:
         clauses: List[str] = []
         params: List[object] = []
+        if repo is not None:
+            clauses.append("repo = ?")
+            params.append(repo)
         if workflow is not None:
             clauses.append("workflow_file = ?")
             params.append(workflow)
@@ -133,7 +166,7 @@ class Cache:
             params.append(until)
 
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-        sql = "SELECT run_id, workflow_file, status, branch, commit_sha, run_date, duration_secs FROM workflow_runs" + where + " ORDER BY run_date DESC"
+        sql = "SELECT run_id, repo, workflow_file, status, branch, commit_sha, run_date, duration_secs FROM workflow_runs" + where + " ORDER BY run_date DESC"
         rows = self._conn.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
 

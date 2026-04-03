@@ -7,7 +7,7 @@ from typing import Dict, List, Optional
 import httpx
 
 
-REPO = "valkey-io/valkey"
+DEFAULT_REPO = "valkey-io/valkey"
 BASE_URL = "https://api.github.com"
 
 
@@ -31,7 +31,8 @@ class RateLimitError(GitHubAPIError):
 class GitHubActionsClient:
     """Read-only client for the GitHub Actions REST API."""
 
-    def __init__(self, token: Optional[str] = None) -> None:
+    def __init__(self, token: Optional[str] = None, repo: str = DEFAULT_REPO) -> None:
+        self.repo = repo
         headers: Dict[str, str] = {"Accept": "application/vnd.github+json"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
@@ -96,7 +97,7 @@ class GitHubActionsClient:
                 params["created"] = "..".join(parts) if len(parts) == 2 else parts[0]
 
             resp = self._client.get(
-                f"/repos/{REPO}/actions/workflows/{workflow_file}/runs",
+                f"/repos/{self.repo}/actions/workflows/{workflow_file}/runs",
                 params=params,
             )
             self._raise_for_status(resp)
@@ -121,7 +122,7 @@ class GitHubActionsClient:
 
         while True:
             resp = self._client.get(
-                f"/repos/{REPO}/actions/runs/{run_id}/jobs",
+                f"/repos/{self.repo}/actions/runs/{run_id}/jobs",
                 params={"page": current_page, "per_page": per_page},
             )
             self._raise_for_status(resp)
@@ -139,7 +140,7 @@ class GitHubActionsClient:
 
     def get_job_log(self, job_id: int) -> str:
         """Fetch the raw log text for a given job ID."""
-        resp = self._client.get(f"/repos/{REPO}/actions/jobs/{job_id}/logs")
+        resp = self._client.get(f"/repos/{self.repo}/actions/jobs/{job_id}/logs")
         self._raise_for_status(resp)
         return resp.text
 
@@ -150,7 +151,7 @@ class GitHubActionsClient:
         Returns a list of compact commit dicts (sha, message, author, date).
         """
         resp = self._client.get(
-            f"/repos/{REPO}/compare/{base}...{head}",
+            f"/repos/{self.repo}/compare/{base}...{head}",
             params={"per_page": 100},
         )
         self._raise_for_status(resp)
