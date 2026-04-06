@@ -1,0 +1,60 @@
+name: Update CI Dashboard
+
+on:
+  schedule:
+    # Run daily at 06:00 UTC (after the nightly CI run completes)
+    - cron: '0 6 * * *'
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: dashboard
+  cancel-in-progress: true
+
+jobs:
+  update-dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install valkey-oncall
+        run: pip install -e .
+
+      - name: Restore cache DB
+        uses: actions/cache@v4
+        with:
+          path: ~/.valkey-oncall/cache.db
+          key: oncall-cache-${{ github.ref_name }}
+          restore-keys: oncall-cache-
+
+      - name: Generate reports
+        env:
+          GITHUB_TOKEN: ${{ secrets.VALKEY_CI_TOKEN }}
+        run: |
+          mkdir -p _site
+          valkey-oncall report --format html -o _site/index.html
+          valkey-oncall report --format markdown -o _site/report.md
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: update-dashboard
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

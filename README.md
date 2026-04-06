@@ -76,24 +76,36 @@ valkey-oncall query failures --test-name "%maxmemory%"
 # Generate a 14-day HTML failure trend report (default)
 valkey-oncall report
 
-# Custom range
-valkey-oncall report --days 7 --output weekly-report.html
+# Markdown for pasting into GitHub issues/PRs
+valkey-oncall report --format markdown -o report.md
 
-# With commit changelogs between runs (requires token)
-GITHUB_TOKEN=$(gh auth token) valkey-oncall report --days 14
+# Slack mrkdwn format
+valkey-oncall report --format slack -o report.txt
+
+# Custom range and branch
+valkey-oncall report --days 7 --branch stable --output weekly-report.html
+
+# Skip auto-sync (use cached data only)
+valkey-oncall report --no-sync
+
+# Report on a different repo (e.g. your fork)
+valkey-oncall --repo yourname/valkey report --branch unstable
 ```
 
 The report includes:
-- A timeline grid showing which tests failed on which days
+- A timeline heatmap showing which tests failed on which days
 - Failure frequency per test
 - Per-run commit changelogs (commits between consecutive runs)
+- Clickable job links `[1][2][3]` on each failure for quick access to logs
+- Commit message tooltips on hover
 - Failed job lists and error details on hover
 
 ## Options
 
 ```
---db PATH    SQLite cache path (default: ~/.valkey-oncall/cache.db)
--v           Verbose output to stderr during operations
+--db PATH      SQLite cache path (default: ~/.valkey-oncall/cache.db)
+--repo OWNER/NAME  GitHub repository (default: valkey-io/valkey)
+-v             Verbose output to stderr during operations
 ```
 
 ## How it works
@@ -104,6 +116,67 @@ The report includes:
 4. **Report** — aggregates cached data into trend reports
 
 The log parser handles Valkey's Tcl test framework (`[err]`, `[exception]` stack traces), Google Test output, sentinel test failures, and GitHub Actions error annotations. It strips GitHub Actions timestamp prefixes automatically.
+
+## Hosted Dashboard (GitHub Pages)
+
+You can set up an auto-updating dashboard that regenerates daily and publishes to GitHub Pages. This works from any repo — it doesn't need to live in `valkey-io/valkey`.
+
+### 1. Create a Personal Access Token
+
+1. Go to [github.com → Settings → Developer settings → Fine-grained tokens](https://github.com/settings/personal-access-tokens/new)
+2. Set a descriptive name like `valkey-ci-dashboard`
+3. Under **Repository access**, select **Only select repositories** and pick `valkey-io/valkey`
+4. Under **Permissions → Repository permissions**, set **Actions** to **Read-only**
+5. Click **Generate token** and copy it
+
+### 2. Add the token as a repository secret
+
+1. In your dashboard repo, go to **Settings → Secrets and variables → Actions**
+2. Click **New repository secret**
+3. Name: `VALKEY_CI_TOKEN`, Value: paste the token from step 1
+
+### 3. Enable GitHub Pages
+
+1. In your repo, go to **Settings → Pages**
+2. Under **Source**, select **GitHub Actions**
+
+### 4. Add the workflow
+
+The workflow file at `.github/workflows/dashboard.yml` is included in this repo. It:
+
+- Runs daily at 06:00 UTC (after the nightly CI typically completes)
+- Caches the SQLite database between runs for incremental sync
+- Generates HTML and Markdown reports
+- Deploys to GitHub Pages
+
+You can also trigger it manually from the Actions tab.
+
+### 5. Customize (optional)
+
+Edit the workflow's "Generate reports" step to change the report parameters:
+
+```yaml
+- name: Generate reports
+  env:
+    GITHUB_TOKEN: ${{ secrets.VALKEY_CI_TOKEN }}
+  run: |
+    mkdir -p _site
+    # Change --days, --branch, --workflow, or --repo as needed
+    valkey-oncall --repo valkey-io/valkey report --days 14 --branch unstable --format html -o _site/index.html
+    valkey-oncall --repo valkey-io/valkey report --days 14 --branch unstable --format markdown -o _site/report.md
+```
+
+To monitor a fork or different branch:
+```yaml
+    valkey-oncall --repo yourname/valkey report --branch my-feature --format html -o _site/index.html
+```
+
+### Notes
+
+- The fine-grained PAT expires after at most 1 year. Set a reminder to rotate it.
+- The PAT is tied to your GitHub account. For a team setup, consider using a [GitHub App](https://docs.github.com/en/apps) instead.
+- The Actions cache persists the SQLite DB between runs. If the cache is evicted (after 7 days of inactivity), the next run does a full sync automatically — it just takes longer.
+- Since `valkey-io/valkey` is public, run/job metadata works without auth. The token is mainly needed for downloading job logs and for higher rate limits (5,000/hr vs 60/hr).
 
 ## Development
 

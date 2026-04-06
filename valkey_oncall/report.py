@@ -529,6 +529,7 @@ _HTML_TEMPLATE = """\
   .job-link:hover {{ text-decoration: underline; }}
   .sha {{ color: #58a6ff; text-decoration: none; font-family: monospace; font-size: 11px; }}
   .sha:hover {{ text-decoration: underline; }}
+  .hint {{ color: #8b949e; font-size: 11px; margin-bottom: 12px; line-height: 1.5; max-width: 720px; }}
   details {{ margin-top: 20px; }}
   summary {{ cursor: pointer; color: #8b949e; font-size: 12px; }}
   pre {{ background: #161b22; padding: 12px; border-radius: 6px; overflow-x: auto;
@@ -538,6 +539,7 @@ _HTML_TEMPLATE = """\
 <body>
 <h1>Valkey CI Failure Report</h1>
 <p class="meta">{workflow} · {branch} · {repo} · last {days} days · generated {generated}</p>
+<p class="hint">Daily CI failure trends for the <b>{branch}</b> branch. Tracks which tests fail, how often, and whether they are getting better or worse.</p>
 
 <div class="stats">
   <div class="stat"><div class="stat-val">{total_runs}</div><div class="stat-label">runs</div></div>
@@ -546,6 +548,13 @@ _HTML_TEMPLATE = """\
 </div>
 
 <table>
+  <caption class="hint" style="text-align:left; caption-side:top; margin-bottom:8px;">
+    Columns are days, rows are unique test failures. Each cell shows how many jobs hit that failure on that day.
+    <span style="display:inline-block; width:10px; height:10px; background:#da3633; border-radius:2px; vertical-align:middle;"></span> failed
+    <span style="display:inline-block; width:10px; height:10px; background:#238636; border-radius:2px; vertical-align:middle;"></span> passed
+    <span style="display:inline-block; width:10px; height:10px; background:#21262d; border-radius:2px; vertical-align:middle;"></span> no failure.
+    Freq = days failed / total days.
+  </caption>
   <thead>
     <tr><th class="test-name">Test</th><th class="freq">Freq</th>{date_headers}</tr>
     <tr><td class="test-name" style="color:#8b949e">Run status</td><td></td>{run_status_cells}</tr>
@@ -557,6 +566,7 @@ _HTML_TEMPLATE = """\
 
 <div class="section">
   <h2>Run Details (newest first)</h2>
+  <p class="hint">Each row is one daily CI run. Status shows failed/total jobs. Numbered links like [1][2] go to the specific job logs on GitHub. Hover over a commit SHA to see the commit message.</p>
   <table class="detail-table">
     <thead><tr><th>Date</th><th>Status</th><th>Commit</th><th>#</th><th>Unique Failures</th><th>Failed Jobs</th><th>Commits since prev run</th></tr></thead>
     <tbody>{run_detail_rows}</tbody>
