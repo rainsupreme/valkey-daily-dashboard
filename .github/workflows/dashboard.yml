@@ -40,8 +40,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.VALKEY_CI_TOKEN }}
         run: |
           mkdir -p _site
-          valkey-oncall report --format html -o _site/index.html
-          valkey-oncall report --format markdown -o _site/report.md
+          valkey-oncall -v report --format html -o _site/index.html
+          valkey-oncall -v report --format markdown -o _site/report.md --no-sync
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
