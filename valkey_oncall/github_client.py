@@ -165,3 +165,17 @@ class GitHubActionsClient:
             }
             for c in data.get("commits", [])
         ]
+
+    def get_commit(self, sha: str) -> Dict:
+        """Fetch a single commit and return a compact dict."""
+        resp = self._client.get(f"/repos/{self.repo}/commits/{sha}")
+        self._raise_for_status(resp)
+        data = resp.json()
+        commit = data.get("commit", {})
+        message = (commit.get("message", "") or "")
+        return {
+            "sha": data.get("sha", sha),
+            "message_subject": message.split("\n")[0],
+            "message_full": message,
+            "author": (commit.get("author", {}) or {}).get("name", ""),
+        }

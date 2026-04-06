@@ -80,6 +80,11 @@ def generate_report_data(
 
         run_info["unique_failures"] = len(by_test)
         run_info["failure_names"] = sorted(by_test.keys())
+        # Map each failure name to its job_ids for linking
+        run_info["failure_jobs"] = {
+            test_name: sorted(set(inst["job_id"] for inst in instances))
+            for test_name, instances in by_test.items()
+        }
         run_details.append(run_info)
 
         # Record in timeline
@@ -116,6 +121,18 @@ def generate_report_data(
                     run_details[i]["commits_since_prev"] = []
             else:
                 run_details[i]["commits_since_prev"] = []
+
+        # Fetch commit messages for each unique SHA
+        seen_shas: Dict[str, str] = {}
+        for run in run_details:
+            sha = run.get("commit_sha", "")
+            if sha and sha not in seen_shas:
+                try:
+                    info = client.get_commit(sha)
+                    seen_shas[sha] = info.get("message_full", "")
+                except Exception:
+                    seen_shas[sha] = ""
+            run["commit_message"] = seen_shas.get(sha, "")
 
     return {
         "dates": dates,
@@ -211,17 +228,24 @@ def render_html(data: Dict) -> str:
         else:
             jobs_html = "—"
         sha = run.get("commit_sha", "")
-        sha_link = _commit_link(sha, repo) if sha else "—"
+        commit_msg = run.get("commit_message", "") or ""
+        sha_link = _commit_link(sha, repo, title=commit_msg) if sha else "—"
 
         # Commits since previous run
         commits = run.get("commits_since_prev", [])
         if commits:
             commits_html = '<div class="commit-list">'
             for c in commits:
-                c_link = _commit_link(c["sha"], repo)
+                full_msg = c.get("message", "")
+                c_link = _commit_link(c["sha"], repo, title=full_msg)
                 author = html.escape(c.get("author", "")[:20])
-                msg = html.escape(c.get("message", "")[:80])
-                commits_html += f'<div class="commit-entry">{c_link} <span class="commit-author">{author}</span> {msg}</div>'
+                msg_short = html.escape(full_msg[:80])
+                msg_tip = html.escape(full_msg, quote=True)
+                commits_html += (
+                    f'<div class="commit-entry">{c_link} '
+                    f'<span class="commit-author">{author}</span> '
+                    f'<span title="{msg_tip}">{msg_short}</span></div>'
+                )
             commits_html += '</div>'
         else:
             commits_html = '<span class="no-commits">—</span>'
@@ -231,7 +255,7 @@ def render_html(data: Dict) -> str:
             <td>{status_badge}</td>
             <td>{sha_link}</td>
             <td>{run["unique_failures"]}</td>
-            <td class="failures-cell">{_render_failure_names(run.get("failure_names", []))}</td>
+            <td class="failures-cell">{_render_failure_names(run.get("failure_names", []), run.get("failure_jobs", {}), repo, run.get("run_id", 0))}</td>
             <td class="jobs-cell">{jobs_html}</td>
             <td class="commits-cell">{commits_html}</td>
         </tr>"""
@@ -309,13 +333,22 @@ def render_markdown(data: Dict) -> str:
         status = "✅" if run["status"] == "success" else f"❌ {run['failed_jobs']}/{run['total_jobs']}"
         sha = run.get("commit_sha", "")
         sha_md = f"[`{sha[:7]}`](https://github.com/{repo}/commit/{sha})" if sha else "—"
-        failures = ", ".join(
-            f"`{_short_test_name(n)}`" for n in run.get("failure_names", [])[:5]
-        )
+        run_id = run.get("run_id", 0)
+        failure_jobs = run.get("failure_jobs", {})
+        failure_parts = []
+        for n in run.get("failure_names", [])[:5]:
+            short = f"`{_short_test_name(n)}`"
+            job_ids = failure_jobs.get(n, [])
+            if job_ids:
+                job_links = "".join(
+                    f"[[{i+1}]](https://github.com/{repo}/actions/runs/{run_id}/job/{jid})"
+                    for i, jid in enumerate(job_ids)
+                )
+                short += f" {job_links}"
+            failure_parts.append(short)
         if len(run.get("failure_names", [])) > 5:
-            failures += f" +{len(run['failure_names']) - 5} more"
-        if not failures:
-            failures = "—"
+            failure_parts.append(f"+{len(run['failure_names']) - 5} more")
+        failures = ", ".join(failure_parts) if failure_parts else "—"
         lines.append(f"| {run['date']} | {status} | {sha_md} | {run['unique_failures']} | {failures} |")
 
     lines.append("")
@@ -365,14 +398,23 @@ def render_slack(data: Dict) -> str:
         )
         detail = ""
         if run["unique_failures"] > 0:
-            names = ", ".join(
-                f"`{_short_test_name(n)}`"
-                for n in run.get("failure_names", [])[:3]
-            )
+            run_id = run.get("run_id", 0)
+            failure_jobs = run.get("failure_jobs", {})
+            parts = []
+            for n in run.get("failure_names", [])[:3]:
+                short = f"`{_short_test_name(n)}`"
+                job_ids = failure_jobs.get(n, [])
+                if job_ids:
+                    job_links = "".join(
+                        f"<https://github.com/{repo}/actions/runs/{run_id}/job/{jid}|[{i+1}]>"
+                        for i, jid in enumerate(job_ids)
+                    )
+                    short += f" {job_links}"
+                parts.append(short)
             extra = len(run.get("failure_names", [])) - 3
             if extra > 0:
-                names += f" +{extra} more"
-            detail = f" — {names}"
+                parts.append(f"+{extra} more")
+            detail = f" — {', '.join(parts)}"
         lines.append(
             f"{status} {run['date']} {sha_link} "
             f"({run['failed_jobs']}/{run['total_jobs']} jobs failed){detail}"
@@ -395,25 +437,41 @@ def _short_test_name(name: str) -> str:
     return name
 
 
-def _commit_link(sha: str, repo: str = "valkey-io/valkey") -> str:
+def _commit_link(sha: str, repo: str = "valkey-io/valkey", title: str = "") -> str:
     """Render a short commit SHA as a GitHub link."""
     if not sha:
         return ""
     short = sha[:7]
+    tip = html.escape(title, quote=True) if title else sha
     return (
         f'<a href="https://github.com/{repo}/commit/{sha}" '
-        f'class="sha" title="{sha}">{short}</a>'
+        f'class="sha" title="{tip}">{short}</a>'
     )
 
 
-def _render_failure_names(names: List[str]) -> str:
-    """Render a list of failure names as a compact list."""
+def _render_failure_names(
+    names: List[str],
+    failure_jobs: Dict[str, List[int]] = None,
+    repo: str = "valkey-io/valkey",
+    run_id: int = 0,
+) -> str:
+    """Render a list of failure names with linked job IDs."""
     if not names:
         return "—"
-    items = "".join(
-        f'<div class="failure-entry">{html.escape(_short_test_name(n))}</div>'
-        for n in names
-    )
+    failure_jobs = failure_jobs or {}
+    items = ""
+    for n in names:
+        short = html.escape(_short_test_name(n))
+        job_ids = failure_jobs.get(n, [])
+        if job_ids:
+            links = " ".join(
+                f'<a href="https://github.com/{repo}/actions/runs/{run_id}/job/{jid}" '
+                f'class="job-link">[{i+1}]</a>'
+                for i, jid in enumerate(job_ids)
+            )
+            items += f'<div class="failure-entry">{short} {links}</div>'
+        else:
+            items += f'<div class="failure-entry">{short}</div>'
     return f'<div class="failure-list">{items}</div>'
 
 
@@ -467,6 +525,8 @@ _HTML_TEMPLATE = """\
   .failure-list {{ max-height: 150px; overflow-y: auto; }}
   .failure-entry {{ white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
                     max-width: 400px; padding: 1px 0; color: #f85149; }}
+  .job-link {{ color: #58a6ff; text-decoration: none; font-size: 10px; font-family: monospace; }}
+  .job-link:hover {{ text-decoration: underline; }}
   .sha {{ color: #58a6ff; text-decoration: none; font-family: monospace; font-size: 11px; }}
   .sha:hover {{ text-decoration: underline; }}
   details {{ margin-top: 20px; }}
