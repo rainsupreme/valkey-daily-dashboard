@@ -303,6 +303,51 @@ def sync(
 
 
 # ------------------------------------------------------------------
+# scorecard
+# ------------------------------------------------------------------
+
+@cli.command()
+@click.option("--days", default=30, show_default=True, help="Number of days of history for scorecard window.")
+@click.option("--branch", default="unstable", show_default=True, help="Branch to report on.")
+@click.option("--workflow", default="daily", show_default=True, help="Workflow type (daily or weekly).")
+@click.option("--output", "-o", default=None, help="Output file path (default: stdout).")
+@click.option("--no-sync", is_flag=True, default=False, help="Skip syncing latest data.")
+@click.pass_context
+def scorecard(
+    ctx: click.Context,
+    days: int,
+    branch: str,
+    workflow: str,
+    output: Optional[str],
+    no_sync: bool,
+) -> None:
+    """Generate per-test flakiness scorecards as JSON."""
+    from valkey_oncall.scorecard import compute_scorecards
+
+    cache = _make_cache(ctx.obj["db"])
+    repo = ctx.obj["repo"]
+    workflow_file = {"daily": "daily.yml", "weekly": "weekly.yml"}.get(workflow, workflow)
+
+    token = os.environ.get("GITHUB_TOKEN")
+    if not no_sync and token:
+        client = GitHubActionsClient(token=token, repo=repo)
+        verbose = ctx.obj.get("verbose")
+        progress = (lambda msg: click.echo(msg, err=True)) if verbose else None
+        click.echo(f"Syncing latest data for {repo} {workflow} / {branch}...", err=True)
+        svc = OnCallService(client, cache)
+        svc.sync(workflow=workflow_file, branch=branch, progress=progress)
+
+    data = compute_scorecards(cache, days=days, branch=branch, workflow=workflow_file, repo=repo)
+    content = json.dumps(data, indent=2)
+
+    if output:
+        Path(output).write_text(content)
+        click.echo(f"Scorecard written to {output}", err=True)
+    else:
+        click.echo(content)
+
+
+# ------------------------------------------------------------------
 # report
 # ------------------------------------------------------------------
 
