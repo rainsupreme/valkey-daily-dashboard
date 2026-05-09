@@ -12,7 +12,7 @@ def _classify(rate: float) -> str:
     """Classify a failure rate into a flakiness category."""
     if rate >= 0.8:
         return "persistent"
-    if rate >= 0.2:
+    if rate >= 0.01:
         return "flaky"
     return "rare"
 

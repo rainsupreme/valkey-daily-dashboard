@@ -17,13 +17,12 @@ class TestClassify:
 
     def test_flaky(self):
         assert _classify(0.5) == "flaky"
-        assert _classify(0.2) == "flaky"
+        assert _classify(0.01) == "flaky"
         assert _classify(0.79) == "flaky"
 
     def test_rare(self):
-        assert _classify(0.1) == "rare"
+        assert _classify(0.009) == "rare"
         assert _classify(0.0) == "rare"
-        assert _classify(0.19) == "rare"
 
 
 class TestTrend:
