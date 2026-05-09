@@ -43,6 +43,7 @@ jobs:
           valkey-oncall -v report --format html -o _site/index.html
           valkey-oncall -v report --format markdown -o _site/report.md --no-sync
           valkey-oncall scorecard --no-sync -o _site/scorecards.json
+          valkey-oncall blame --no-sync -o _site/blame.json
           # Export raw report data as JSON for machine consumption
           python3 -c "
           from valkey_oncall.cache import Cache; from valkey_oncall.report import generate_report_data
