@@ -134,6 +134,27 @@ def generate_report_data(
                     seen_shas[sha] = ""
             run["commit_message"] = seen_shas.get(sha, "")
 
+    # Compute long-term (90-day) failure rates for each test
+    long_term_since = (datetime.now(timezone.utc) - timedelta(days=90)).strftime(
+        "%Y-%m-%dT00:00:00Z"
+    )
+    lt_runs = cache.query_runs(repo=repo, workflow=workflow, branch=branch, since=long_term_since)
+    lt_seen_dates: set[str] = set()
+    for r in lt_runs:
+        if r["status"] not in ("in_progress", "queued", "skipped"):
+            lt_seen_dates.add(r["run_date"][:10])
+    lt_total = len(lt_seen_dates) or 1
+
+    # Count days each test failed in the 90-day window
+    lt_test_days: Dict[str, set] = defaultdict(set)
+    for r in lt_runs:
+        if r["status"] in ("in_progress", "queued", "skipped"):
+            continue
+        date_key = r["run_date"][:10]
+        for j in cache.query_jobs(r["run_id"], failed_only=True):
+            for f in cache.query_failures(job_id=j["job_id"]):
+                lt_test_days[f["test_name"]].add(date_key)
+
     return {
         "dates": dates,
         "runs": run_details,
@@ -141,6 +162,7 @@ def generate_report_data(
             name: {
                 "total": test_totals[name],
                 "days_failed": len(test_timeline[name]),
+                "score_90d": round(len(lt_test_days.get(name, set())) / lt_total * 100, 1),
                 "timeline": {
                     d: test_timeline[name].get(d) for d in dates
                 },
@@ -188,6 +210,8 @@ def render_html(data: Dict) -> str:
         # Shorten the display name
         short_name = _short_test_name(test_name)
         freq = f'{info["days_failed"]}/{len(dates)}d'
+        score_90d = info.get("score_90d", 0)
+        score_str = f'{score_90d:.0f}%' if score_90d >= 1 else f'{score_90d:.1f}%'
 
         cells = ""
         for d in dates:
@@ -206,6 +230,7 @@ def render_html(data: Dict) -> str:
         test_rows += f"""<tr>
             <td class="test-name" title="{html.escape(test_name)}">{html.escape(short_name)}</td>
             <td class="freq">{freq}</td>
+            <td class="freq" title="Failed {score_90d:.1f}% of runs in last 90 days">{score_str}</td>
             {cells}
         </tr>"""
 
@@ -556,8 +581,8 @@ _HTML_TEMPLATE = """\
     Freq = days failed / total days.
   </caption>
   <thead>
-    <tr><th class="test-name">Test</th><th class="freq">Freq</th>{date_headers}</tr>
-    <tr><td class="test-name" style="color:#8b949e">Run status</td><td></td>{run_status_cells}</tr>
+    <tr><th class="test-name">Test</th><th class="freq">Freq</th><th class="freq" title="Failure rate over last 90 days">90d</th>{date_headers}</tr>
+    <tr><td class="test-name" style="color:#8b949e">Run status</td><td></td><td></td>{run_status_cells}</tr>
   </thead>
   <tbody>
     {test_rows}
