@@ -209,7 +209,8 @@ def render_html(data: Dict) -> str:
     for test_name, info in tests.items():
         # Shorten the display name
         short_name = _short_test_name(test_name)
-        freq = f'{info["days_failed"]}/{len(dates)}d'
+        freq_pct = round(info["days_failed"] / len(dates) * 100) if dates else 0
+        freq = f'{freq_pct}%'
         score_90d = info.get("score_90d", 0)
         score_str = f'{score_90d:.0f}%' if score_90d >= 1 else f'{score_90d:.1f}%'
 
@@ -581,7 +582,7 @@ _HTML_TEMPLATE = """\
     Freq = days failed / total days.
   </caption>
   <thead>
-    <tr><th class="test-name">Test</th><th class="freq">Freq</th><th class="freq" title="Failure rate over last 90 days">90d</th>{date_headers}</tr>
+    <tr><th class="test-name">Test</th><th class="freq" title="Failure rate over last 14 days">14d</th><th class="freq" title="Failure rate over last 90 days">90d</th>{date_headers}</tr>
     <tr><td class="test-name" style="color:#8b949e">Run status</td><td></td><td></td>{run_status_cells}</tr>
   </thead>
   <tbody>
