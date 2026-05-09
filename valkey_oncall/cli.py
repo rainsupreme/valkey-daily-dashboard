@@ -348,6 +348,53 @@ def scorecard(
 
 
 # ------------------------------------------------------------------
+# blame
+# ------------------------------------------------------------------
+
+@cli.command()
+@click.option("--days", default=30, show_default=True, help="Number of days of history to search for regressions.")
+@click.option("--branch", default="unstable", show_default=True, help="Branch to analyze.")
+@click.option("--workflow", default="daily", show_default=True, help="Workflow type (daily or weekly).")
+@click.option("--output", "-o", default=None, help="Output file path (default: stdout).")
+@click.option("--no-sync", is_flag=True, default=False, help="Skip syncing latest data.")
+@click.pass_context
+def blame(
+    ctx: click.Context,
+    days: int,
+    branch: str,
+    workflow: str,
+    output: Optional[str],
+    no_sync: bool,
+) -> None:
+    """Identify commits likely responsible for test regressions."""
+    from valkey_oncall.blame import compute_blame
+
+    _require_token()
+    cache = _make_cache(ctx.obj["db"])
+    repo = ctx.obj["repo"]
+    workflow_file = {"daily": "daily.yml", "weekly": "weekly.yml"}.get(workflow, workflow)
+
+    token = os.environ.get("GITHUB_TOKEN")
+    client = GitHubActionsClient(token=token, repo=repo)
+
+    if not no_sync:
+        verbose = ctx.obj.get("verbose")
+        progress = (lambda msg: click.echo(msg, err=True)) if verbose else None
+        click.echo(f"Syncing latest data for {repo} {workflow} / {branch}...", err=True)
+        svc = OnCallService(client, cache)
+        svc.sync(workflow=workflow_file, branch=branch, progress=progress)
+
+    records = compute_blame(cache, client, days=days, branch=branch, workflow=workflow_file, repo=repo)
+    content = json.dumps(records, indent=2)
+
+    if output:
+        Path(output).write_text(content)
+        click.echo(f"Blame report written to {output}", err=True)
+    else:
+        click.echo(content)
+
+
+# ------------------------------------------------------------------
 # report
 # ------------------------------------------------------------------
 

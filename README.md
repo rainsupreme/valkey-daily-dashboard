@@ -100,6 +100,48 @@ The report includes:
 - Commit message tooltips on hover
 - Failed job lists and error details on hover
 
+### Scorecards
+
+Per-test flakiness scorecards with trend analysis:
+
+```bash
+# Generate scorecards over the last 30 days (default)
+valkey-oncall scorecard
+
+# Custom window and output file
+valkey-oncall scorecard --days 60 -o scorecards.json
+
+# Skip sync (use cached data only)
+valkey-oncall scorecard --no-sync
+```
+
+Each scorecard includes:
+- `failure_rate` — proportion of runs where the test failed (0.0–1.0)
+- `classification` — "persistent" (≥80%), "flaky" (20–80%), or "rare" (<20%)
+- `trend` — linear regression slope (positive = getting worse)
+- `first_seen` / `last_seen` — date boundaries of the test's failures
+- `category` — extracted from test file path (unit/cluster/sentinel/other)
+- `daily_series` — per-day failure counts for sparkline rendering
+
+### Blame
+
+Identify commits likely responsible for test regressions by finding green→red transitions:
+
+```bash
+# Find blame candidates for all regressions in the last 30 days
+valkey-oncall blame
+
+# Custom window
+valkey-oncall blame --days 60 -o blame.json
+```
+
+For each test that started failing within the window, blame narrows down to the
+commits between the last passing run and the first failing run. Output includes:
+- `regression_date` — when the test first failed
+- `last_pass_sha` / `first_fail_sha` — the boundary commits
+- `blame_commits` — list of commits between those two SHAs (from GitHub compare API)
+- `commit_count` — number of candidate commits
+
 ## Options
 
 ```
@@ -116,6 +158,23 @@ The report includes:
 4. **Report** — aggregates cached data into trend reports
 
 The log parser handles Valkey's Tcl test framework (`[err]`, `[exception]` stack traces), Google Test output, sentinel test failures, and GitHub Actions error annotations. It strips GitHub Actions timestamp prefixes automatically.
+
+## JSON API (GitHub Pages)
+
+When deployed to GitHub Pages, the dashboard serves machine-readable JSON endpoints
+alongside the HTML report. These are designed for consumption by AI agents and scripts:
+
+| Endpoint | Description |
+|----------|-------------|
+| `/report.json` | Full report data: runs, failures, timelines, commit changelogs |
+| `/scorecards.json` | Per-test flakiness scorecards with rates, trends, classifications |
+| `/blame.json` | Blame candidates for each test regression (commits between last-pass and first-fail) |
+| `/report.md` | Markdown report (human-readable, also parseable) |
+
+Example:
+```bash
+curl -s https://youruser.github.io/valkey-daily-dashboard/scorecards.json | jq '.scorecards[:3]'
+```
 
 ## Hosted Dashboard (GitHub Pages)
 
@@ -196,6 +255,8 @@ valkey_oncall/
   log_parser.py     — CI log failure extraction
   service.py        — orchestration (sync, fetch, parse)
   report.py         — HTML report generation
+  scorecard.py      — per-test flakiness scorecards
+  blame.py          — regression blame narrowing
   cli.py            — click CLI entry point
 
 tests/
@@ -205,4 +266,6 @@ tests/
   test_log_parser_realworld.py — regression tests from real CI logs
   test_service.py              — service layer tests
   test_cli.py                  — CLI integration tests
+  test_scorecard.py            — scorecard unit + integration tests
+  test_blame.py                — blame narrowing tests
 ```
