@@ -42,6 +42,15 @@ jobs:
           mkdir -p _site
           valkey-oncall -v report --format html -o _site/index.html
           valkey-oncall -v report --format markdown -o _site/report.md --no-sync
+          valkey-oncall scorecard --no-sync -o _site/scorecards.json
+          # Export raw report data as JSON for machine consumption
+          python3 -c "
+          from valkey_oncall.cache import Cache; from valkey_oncall.report import generate_report_data
+          import json; from pathlib import Path
+          cache = Cache(str(Path('~/.valkey-oncall/cache.db').expanduser()))
+          data = generate_report_data(cache, days=14, branch='unstable', workflow='daily.yml')
+          Path('_site/report.json').write_text(json.dumps(data, indent=2))
+          "
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
