@@ -1,5 +1,7 @@
 # valkey-oncall
 
+**[📊 Live Dashboard](https://rainsupreme.github.io/valkey-daily-dashboard/)**
+
 CLI toolkit for monitoring CI test health in the [valkey-io/valkey](https://github.com/valkey-io/valkey) repository. Fetches GitHub Actions workflow runs, downloads job logs, parses them for test failures, and generates trend reports.
 
 ## Quick start
