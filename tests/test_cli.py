@@ -242,13 +242,19 @@ class TestAllCommandOutputIsValidJSON:
         cache.store_log(100, log_text)
 
         mock_client = MagicMock(repo="valkey-io/valkey")
-        # mix_stderr=False keeps stderr separate so JSON on stdout is clean
-        runner = CliRunner(env={"GITHUB_TOKEN": "fake-token"}, mix_stderr=False)
+        runner = CliRunner(env={"GITHUB_TOKEN": "fake-token"})
         with patch("valkey_oncall.cli._make_client", return_value=mock_client):
             result = runner.invoke(cli, ["--db", db_path, "parse-log", "--job-id", "100"])
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
-        parsed = json.loads(result.output)
+        # Click 8.3+ mixes stderr into output; try full parse, fall back to
+        # finding the JSON array after any stderr text
+        output = result.output.strip()
+        try:
+            parsed = json.loads(output)
+        except json.JSONDecodeError:
+            json_start = output.rindex("[")  # last '[' is the JSON array
+            parsed = json.loads(output[json_start:])
         assert isinstance(parsed, list)
 
 
@@ -382,7 +388,7 @@ class TestCLIIntegration:
         mock_client = MagicMock(repo="valkey-io/valkey")
         mock_client.get_workflow_runs.side_effect = GitHubAPIError(500, "Internal Server Error")
 
-        runner = CliRunner(env={"GITHUB_TOKEN": "fake-token"}, mix_stderr=False)
+        runner = CliRunner(env={"GITHUB_TOKEN": "fake-token"})
         with patch("valkey_oncall.cli._make_client", return_value=mock_client):
             result = runner.invoke(cli, ["--db", db_path, "fetch-runs", "--workflow", "daily"])
 
@@ -413,7 +419,7 @@ class TestCLIIntegration:
         mock_client = MagicMock(repo="valkey-io/valkey")
         mock_client.get_jobs_for_run.side_effect = GitHubAPIError(404, "Run not found")
 
-        runner = CliRunner(env={"GITHUB_TOKEN": "fake-token"}, mix_stderr=False)
+        runner = CliRunner(env={"GITHUB_TOKEN": "fake-token"})
         with patch("valkey_oncall.cli._make_client", return_value=mock_client):
             result = runner.invoke(cli, ["--db", db_path, "fetch-jobs", "--run-id", "99999"])
 
@@ -446,7 +452,7 @@ class TestCLIIntegration:
         cache.store_log(1001, "[err]: test_acl_setuser in tests/unit.tcl\nExpected OK but got ERR\n")
 
         mock_client = MagicMock(repo="valkey-io/valkey")
-        runner = CliRunner(env={"GITHUB_TOKEN": "fake-token"}, mix_stderr=False)
+        runner = CliRunner(env={"GITHUB_TOKEN": "fake-token"})
         with patch("valkey_oncall.cli._make_client", return_value=mock_client):
             result = runner.invoke(cli, ["--db", db_path, "parse-log", "--job-id", "1001"])
 
@@ -535,7 +541,7 @@ class TestCLIIntegration:
         mock_client = MagicMock(repo="valkey-io/valkey")
         mock_client.get_workflow_runs.return_value = []
 
-        runner = CliRunner(env={"GITHUB_TOKEN": ""}, mix_stderr=False)
+        runner = CliRunner(env={"GITHUB_TOKEN": ""})
         # Let _make_client run so the warning is emitted, but patch the
         # GitHubActionsClient constructor to avoid real HTTP setup.
         with patch("valkey_oncall.cli.GitHubActionsClient", return_value=mock_client):
@@ -548,7 +554,7 @@ class TestCLIIntegration:
     # 13. fetch-log fails without GITHUB_TOKEN
     def test_fetch_log_requires_token(self) -> None:
         db_path = _fresh_db()
-        runner = CliRunner(env={"GITHUB_TOKEN": ""}, mix_stderr=False)
+        runner = CliRunner(env={"GITHUB_TOKEN": ""})
         result = runner.invoke(cli, ["--db", db_path, "fetch-log", "--job-id", "123"])
 
         assert result.exit_code == 1
@@ -558,7 +564,7 @@ class TestCLIIntegration:
     # 14. sync fails without GITHUB_TOKEN
     def test_sync_requires_token(self) -> None:
         db_path = _fresh_db()
-        runner = CliRunner(env={"GITHUB_TOKEN": ""}, mix_stderr=False)
+        runner = CliRunner(env={"GITHUB_TOKEN": ""})
         result = runner.invoke(cli, ["--db", db_path, "sync", "--workflow", "daily"])
 
         assert result.exit_code == 1
