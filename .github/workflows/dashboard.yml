@@ -47,10 +47,13 @@ jobs:
           # Export raw report data as JSON for machine consumption
           python3 -c "
           from valkey_oncall.cache import Cache; from valkey_oncall.report import generate_report_data
-          import json; from pathlib import Path
+          import json, sys; from pathlib import Path
           cache = Cache(str(Path('~/.valkey-oncall/cache.db').expanduser()))
           data = generate_report_data(cache, days=14, branch='unstable', workflow='daily.yml')
           Path('_site/report.json').write_text(json.dumps(data, indent=2))
+          if data['summary']['total_runs'] == 0:
+              print('ERROR: report has 0 runs — sync likely failed', file=sys.stderr)
+              sys.exit(1)
           "
 
       - name: Upload Pages artifact
