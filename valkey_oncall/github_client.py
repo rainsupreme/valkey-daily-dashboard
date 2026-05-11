@@ -36,7 +36,9 @@ class GitHubActionsClient:
         headers: Dict[str, str] = {"Accept": "application/vnd.github+json"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
-        self._client = httpx.Client(base_url=BASE_URL, headers=headers, follow_redirects=True)
+        self._client = httpx.Client(
+            base_url=BASE_URL, headers=headers, follow_redirects=True, timeout=120.0
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers
