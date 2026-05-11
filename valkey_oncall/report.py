@@ -191,11 +191,12 @@ def render_html(data: Dict) -> str:
     runs = data["runs"]
     repo = summary.get("repo", "valkey-io/valkey")
 
-    # Build date headers — just day number, with full date on hover
+    # Build date headers — M/D format, no leading zeros
     date_headers = ""
     for d in dates:
-        day = d[8:10]  # "01" from "2026-04-01"
-        date_headers += f'<th title="{d}">{day}</th>'
+        month = int(d[5:7])
+        day = int(d[8:10])
+        date_headers += f'<th class="date-col" title="{d}">{month}/{day}</th>'
 
     # Build run status row (overall pass/fail per day)
     run_status_cells = ""
@@ -527,6 +528,7 @@ _HTML_TEMPLATE = """\
   .freq {{ color: #8b949e; font-size: 11px; white-space: nowrap; padding-right: 4px; }}
   .cell {{ width: 22px; height: 22px; min-width: 22px; border-radius: 3px;
            font-size: 10px; line-height: 22px; cursor: default; }}
+  .date-col {{ width: 32px; min-width: 32px; max-width: 32px; font-size: 11px; white-space: nowrap; }}
   .cell.fail {{ background: #da3633; color: #fff; font-weight: 600; }}
   .cell.pass {{ background: #238636; }}
   .cell.none {{ background: #21262d; }}
