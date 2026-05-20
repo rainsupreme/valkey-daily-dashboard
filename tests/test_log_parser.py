@@ -100,14 +100,50 @@ class TestSummaryErrPattern:
 class TestTimeoutPattern:
     """Parser extracts failures from [TIMEOUT] markers."""
 
-    def test_timeout(self) -> None:
+    def test_timeout_with_summary_line(self) -> None:
+        """*** [TIMEOUT] summary line extracts test name + file."""
         log = (
             "[TIMEOUT]: clients state report follows.\n"
-            "5 => (IN PROGRESS) Test slow thing in tests/unit/slow.tcl\n"
+            "sock55daabee8d50 => (IN PROGRESS) test io-threads are runtime modifiable\n"
+            "Killing still running Valkey server 17910\n"
+            "\n"
+            "*** [TIMEOUT]: test io-threads are runtime modifiable in tests/unit/other.tcl\n"
         )
         failures = parse_job_log(log)
-        assert len(failures) >= 1
-        assert any("TIMEOUT" in f.error_summary for f in failures)
+        assert len(failures) == 1
+        assert failures[0].test_name == "test io-threads are runtime modifiable in tests/unit/other.tcl"
+        assert "TIMEOUT" in failures[0].error_summary
+
+    def test_timeout_in_progress_fallback(self) -> None:
+        """When no *** summary, falls back to (IN PROGRESS) line."""
+        log = (
+            "[TIMEOUT]: clients state report follows.\n"
+            "sock564212577d50 => (IN PROGRESS) test some slow test\n"
+            "Killing still running Valkey server 17999\n"
+        )
+        failures = parse_job_log(log)
+        assert len(failures) == 1
+        assert "test some slow test" in failures[0].test_name
+        assert "TIMEOUT" in failures[0].error_summary
+
+    def test_timeout_specific_detail(self) -> None:
+        """Non-generic timeout detail is used directly."""
+        log = "[TIMEOUT]: test replication timeout in tests/unit/repl.tcl\n"
+        failures = parse_job_log(log)
+        assert len(failures) == 1
+        assert "replication timeout" in failures[0].test_name
+
+    def test_timeout_no_duplicate_with_summary(self) -> None:
+        """Generic [TIMEOUT] is suppressed when *** [TIMEOUT] captures same test."""
+        log = (
+            "[TIMEOUT]: clients state report follows.\n"
+            "sock55daabee8d50 => (IN PROGRESS) test io-threads are runtime modifiable\n"
+            "*** [TIMEOUT]: test io-threads are runtime modifiable in tests/unit/other.tcl\n"
+        )
+        failures = parse_job_log(log)
+        # Should produce exactly 1 failure, not 2
+        assert len(failures) == 1
+        assert "tests/unit/other.tcl" in failures[0].test_name
 
 
 class TestGtestPattern:

@@ -60,6 +60,16 @@ _TIMEOUT_RE = re.compile(
     r"^\[TIMEOUT\]:\s*(.+)", re.MULTILINE
 )
 
+# Timeout summary: "*** [TIMEOUT]: test_name in tests/file.tcl"
+_SUMMARY_TIMEOUT_RE = re.compile(
+    r"^\*\*\*\s+\[TIMEOUT\]:\s*(.+?)\s+in\s+(tests/.+\.tcl)\s*$", re.MULTILINE
+)
+
+# In-progress client line after timeout: "sock<hex> => (IN PROGRESS) test_name"
+_IN_PROGRESS_RE = re.compile(
+    r"^sock[0-9a-f]+\s+=>\s+\(IN PROGRESS\)\s+(.+)", re.MULTILINE
+)
+
 # Google Test failure marker: "[  FAILED  ] TestSuite.TestName"
 _GTEST_FAILED_RE = re.compile(
     r"^\[\s+FAILED\s+\]\s+(\S+)", re.MULTILINE
@@ -200,12 +210,35 @@ def parse_job_log(raw_log: str) -> List[TestFailure]:
         _add(full_name, test_name, context)
 
     # 3. TIMEOUT markers
+    #    First pass: collect *** [TIMEOUT] summary lines (have test name + file)
+    timeout_summary_names: set[str] = set()
+    for m in _SUMMARY_TIMEOUT_RE.finditer(cleaned):
+        test_name = m.group(1).strip()
+        test_file = m.group(2).strip()
+        full_name = f"{test_name} in {test_file}"
+        timeout_summary_names.add(full_name)
+        idx = _find_line_index(lines, m.group(0).strip())
+        context = _context_window(lines, idx, radius=3) if idx >= 0 else m.group(0)
+        _add(full_name, f"TIMEOUT: {test_name}", context)
+
+    #    Second pass: handle bare [TIMEOUT] markers
     for m in _TIMEOUT_RE.finditer(cleaned):
         detail = m.group(1).strip()
-        # Try to extract a test name from the detail
-        # Format is often: "test_name in tests/file.tcl" or just a description
-        test_name = detail
         idx = _find_line_index(lines, m.group(0).strip())
+
+        # If detail is the generic "clients state report follows." message,
+        # look at the next line for "(IN PROGRESS) <real test name>"
+        if "clients state report follows" in detail.lower():
+            if idx >= 0 and idx + 1 < len(lines):
+                prog_match = _IN_PROGRESS_RE.match(lines[idx + 1])
+                if prog_match:
+                    detail = prog_match.group(1).strip()
+
+        # Skip if the *** [TIMEOUT] summary already captured this test
+        if any(detail in name for name in timeout_summary_names):
+            continue
+
+        test_name = detail
         context = _context_window(lines, idx, radius=5) if idx >= 0 else m.group(0)
         _add(test_name, f"TIMEOUT: {detail}", context)
 
