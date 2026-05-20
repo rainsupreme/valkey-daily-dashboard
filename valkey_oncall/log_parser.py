@@ -215,6 +215,9 @@ def parse_job_log(raw_log: str) -> List[TestFailure]:
     for m in _SUMMARY_TIMEOUT_RE.finditer(cleaned):
         test_name = m.group(1).strip()
         test_file = m.group(2).strip()
+        # Strip "pid:NNNNN - tests/file.tcl" pattern (spawn timeout, not a real test name)
+        if re.match(r"pid:\d+\s*-\s*", test_name):
+            test_name = f"spawn timeout in {test_file}"
         full_name = f"{test_name} in {test_file}"
         timeout_summary_names.add(full_name)
         idx = _find_line_index(lines, m.group(0).strip())
@@ -227,12 +230,21 @@ def parse_job_log(raw_log: str) -> List[TestFailure]:
         idx = _find_line_index(lines, m.group(0).strip())
 
         # If detail is the generic "clients state report follows." message,
-        # look at the next line for "(IN PROGRESS) <real test name>"
+        # look at the next line for "(IN PROGRESS) <real test name>" or "(SPAWNED SERVER)"
         if "clients state report follows" in detail.lower():
             if idx >= 0 and idx + 1 < len(lines):
-                prog_match = _IN_PROGRESS_RE.match(lines[idx + 1])
+                next_line = lines[idx + 1]
+                prog_match = _IN_PROGRESS_RE.match(next_line)
                 if prog_match:
                     detail = prog_match.group(1).strip()
+                else:
+                    # Try (SPAWNED SERVER) pattern: "sock<hex> => (SPAWNED SERVER) pid:N - file"
+                    spawn_match = re.match(
+                        r"sock[0-9a-f]+\s+=>\s+\(SPAWNED SERVER\)\s+pid:\d+\s*-\s*(.+)",
+                        next_line,
+                    )
+                    if spawn_match:
+                        detail = f"spawn timeout in {spawn_match.group(1).strip()}"
 
         # Skip if the *** [TIMEOUT] summary already captured this test
         if any(detail in name for name in timeout_summary_names):

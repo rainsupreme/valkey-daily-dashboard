@@ -145,6 +145,20 @@ class TestTimeoutPattern:
         assert len(failures) == 1
         assert "tests/unit/other.tcl" in failures[0].test_name
 
+    def test_timeout_spawned_server(self) -> None:
+        """Spawn timeout resolves to file name, not pid."""
+        log = (
+            "[TIMEOUT]: clients state report follows.\n"
+            "sock556db2f5fa00 => (SPAWNED SERVER) pid:11223 - tests/unit/wait.tcl\n"
+            "Killing still running Valkey server 10891\n"
+            "*** [TIMEOUT]: pid:11223 - tests/unit/wait.tcl in tests/unit/wait.tcl\n"
+        )
+        failures = parse_job_log(log)
+        assert len(failures) == 1
+        assert "spawn timeout" in failures[0].test_name
+        assert "tests/unit/wait.tcl" in failures[0].test_name
+        assert "pid:" not in failures[0].test_name
+
 
 class TestGtestPattern:
     """Parser extracts failures from Google Test output."""
