@@ -217,7 +217,7 @@ def parse_job_log(raw_log: str) -> List[TestFailure]:
         test_file = m.group(2).strip()
         # Strip "pid:NNNNN - tests/file.tcl" pattern (spawn timeout, not a real test name)
         if re.match(r"pid:\d+\s*-\s*", test_name):
-            test_name = f"spawn timeout in {test_file}"
+            test_name = f"spawn timeout"
         full_name = f"{test_name} in {test_file}"
         timeout_summary_names.add(full_name)
         idx = _find_line_index(lines, m.group(0).strip())

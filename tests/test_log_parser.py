@@ -158,6 +158,8 @@ class TestTimeoutPattern:
         assert "spawn timeout" in failures[0].test_name
         assert "tests/unit/wait.tcl" in failures[0].test_name
         assert "pid:" not in failures[0].test_name
+        # Should be "spawn timeout in tests/unit/wait.tcl" (no duplication)
+        assert failures[0].test_name.count("tests/unit/wait.tcl") == 1
 
 
 class TestGtestPattern:

@@ -71,7 +71,7 @@ _MIGRATIONS = [
 
 # Bump this when log_parser.py changes produce different test_name values.
 # On mismatch, test_failures and parse_status are wiped and re-parsed.
-PARSER_VERSION = 3
+PARSER_VERSION = 4
 
 
 def _now_iso() -> str:
