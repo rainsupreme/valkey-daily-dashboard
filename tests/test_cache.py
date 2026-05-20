@@ -575,3 +575,45 @@ class TestQueryFiltersProperty:
 
         # Completeness
         assert result_keys == expected_keys
+
+
+class TestParserVersionInvalidation:
+    """Cache invalidates parse results when parser version bumps."""
+
+    def test_version_bump_clears_failures(self, tmp_path) -> None:
+        import valkey_oncall.cache as cache_mod
+
+        db = str(tmp_path / "test.db")
+        c = Cache(db)
+        c.store_runs([_sample_run(1)])
+        c.store_jobs(1, [_sample_job(100)])
+        c.store_failures(100, [{"test_name": "old name", "error_summary": "x", "log_lines": "y"}])
+        assert c.query_failures(job_id=100) != []
+        c._conn.close()
+
+        # Simulate a parser version bump
+        old_version = cache_mod.PARSER_VERSION
+        cache_mod.PARSER_VERSION = old_version + 1
+        try:
+            c2 = Cache(db)
+            # Failures wiped
+            assert c2.query_failures(job_id=100) == []
+            # But runs and jobs still exist
+            assert c2.has_run(1)
+            assert c2.has_jobs_for_run(1)
+            c2._conn.close()
+        finally:
+            cache_mod.PARSER_VERSION = old_version
+
+    def test_same_version_keeps_failures(self, tmp_path) -> None:
+        db = str(tmp_path / "test.db")
+        c = Cache(db)
+        c.store_runs([_sample_run(1)])
+        c.store_jobs(1, [_sample_job(100)])
+        c.store_failures(100, [{"test_name": "kept", "error_summary": "x", "log_lines": "y"}])
+        c._conn.close()
+
+        c2 = Cache(db)
+        assert len(c2.query_failures(job_id=100)) == 1
+        assert c2.query_failures(job_id=100)[0]["test_name"] == "kept"
+        c2._conn.close()

@@ -343,6 +343,17 @@ class OnCallService:
                         summary["errors"].append(f"parse_log(job={job_id}): {exc}")
                         _log(f"    Error parsing log: {exc}")
 
+        # Re-parse any cached logs that lost their parse results (e.g. parser version bump)
+        unparsed_jobs = self._cache.query_unparsed_jobs_with_logs()
+        if unparsed_jobs:
+            _log(f"Re-parsing {len(unparsed_jobs)} jobs with stale/missing parse results...")
+            for job_id in unparsed_jobs:
+                try:
+                    failures = self.parse_log(job_id)
+                    summary["new_failures_parsed"] += len(failures)
+                except Exception as exc:
+                    summary["errors"].append(f"reparse(job={job_id}): {exc}")
+
         _log(f"Sync complete: {summary['new_runs_fetched']} runs, "
              f"{summary['new_failures_parsed']} failures parsed")
         return summary

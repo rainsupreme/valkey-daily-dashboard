@@ -69,6 +69,10 @@ _MIGRATIONS = [
     ),
 ]
 
+# Bump this when log_parser.py changes produce different test_name values.
+# On mismatch, test_failures and parse_status are wiped and re-parsed.
+PARSER_VERSION = 2
+
 
 def _now_iso() -> str:
     """Return current UTC time as ISO 8601 string."""
@@ -85,6 +89,7 @@ class Cache:
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(_SCHEMA_SQL)
         self._migrate()
+        self._check_parser_version()
         # Ensure repo index exists (for both new and migrated databases)
         try:
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_repo ON workflow_runs(repo)")
@@ -102,6 +107,30 @@ class Cache:
             except sqlite3.OperationalError:
                 # Column/index already exists — skip
                 pass
+
+    def _check_parser_version(self) -> None:
+        """Invalidate cached parse results when parser logic changes.
+
+        Keeps workflow_runs, jobs, and job_logs intact (expensive to
+        re-fetch). Only wipes test_failures and parse_status so the
+        next sync re-parses all cached logs with the new parser.
+        """
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT)"
+        )
+        row = self._conn.execute(
+            "SELECT value FROM metadata WHERE key = 'parser_version'"
+        ).fetchone()
+        stored = int(row[0]) if row else 0
+
+        if stored < PARSER_VERSION:
+            self._conn.execute("DELETE FROM test_failures")
+            self._conn.execute("DELETE FROM parse_status")
+            self._conn.execute(
+                "INSERT OR REPLACE INTO metadata (key, value) VALUES ('parser_version', ?)",
+                (str(PARSER_VERSION),),
+            )
+            self._conn.commit()
 
     # ------------------------------------------------------------------
     # Workflow Runs
@@ -249,6 +278,13 @@ class Cache:
             "SELECT 1 FROM parse_status WHERE job_id = ?", (job_id,)
         ).fetchone()
         return row is not None
+
+    def query_unparsed_jobs_with_logs(self) -> List[int]:
+        """Return job_ids that have cached logs but no parse_status entry."""
+        rows = self._conn.execute(
+            "SELECT job_id FROM job_logs WHERE job_id NOT IN (SELECT job_id FROM parse_status)"
+        ).fetchall()
+        return [r[0] for r in rows]
 
     def store_failures(self, job_id: int, failures: List[Dict]) -> None:
         now = _now_iso()
