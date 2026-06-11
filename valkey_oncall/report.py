@@ -35,7 +35,7 @@ def generate_report_data(
     seen_dates: set[str] = set()
     runs: List[Dict] = []
     for r in all_runs:
-        if r["status"] in ("in_progress", "queued", "skipped"):
+        if r["status"] in ("in_progress", "queued", "skipped", "action_required"):
             continue
         date_key = r["run_date"][:10]
         if date_key in seen_dates:
@@ -141,14 +141,14 @@ def generate_report_data(
     lt_runs = cache.query_runs(repo=repo, workflow=workflow, branch=branch, since=long_term_since)
     lt_seen_dates: set[str] = set()
     for r in lt_runs:
-        if r["status"] not in ("in_progress", "queued", "skipped"):
+        if r["status"] not in ("in_progress", "queued", "skipped", "action_required"):
             lt_seen_dates.add(r["run_date"][:10])
     lt_total = len(lt_seen_dates) or 1
 
     # Count days each test failed in the 90-day window
     lt_test_days: Dict[str, set] = defaultdict(set)
     for r in lt_runs:
-        if r["status"] in ("in_progress", "queued", "skipped"):
+        if r["status"] in ("in_progress", "queued", "skipped", "action_required"):
             continue
         date_key = r["run_date"][:10]
         for j in cache.query_jobs(r["run_id"], failed_only=True):
