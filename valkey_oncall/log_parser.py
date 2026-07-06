@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 
 @dataclass
@@ -106,6 +106,77 @@ _GHA_ERROR_RE = re.compile(
 )
 
 
+# ---------------------------------------------------------------------------
+# Noise filtering / normalization (issue #1)
+# ---------------------------------------------------------------------------
+
+# Generic CI-runner banners that are never a test identity. Matched
+# case-insensitively as substrings.
+_GENERIC_NOISE = (
+    "clients state report follows",
+    "process completed with exit code",
+    "the runner has received a shutdown signal",
+    "the operation was canceled",
+)
+
+
+def _scrub_volatile(text: str) -> str:
+    """Replace run-specific volatile tokens with stable placeholders.
+
+    Two otherwise-identical failures reported on different days must not
+    split into separate rows just because a pid/port/address differs.  This
+    is applied when building a *name* from free-form error text so repeated
+    incidents aggregate.
+    """
+    s = text
+    s = re.sub(r"\d{1,3}(?:\.\d{1,3}){3}:\d+", "<host:port>", s)  # ip:port
+    s = re.sub(r"\bpid[:=]\s*\d+", "pid:<pid>", s)                # pid:12345 / pid=12345
+    s = re.sub(r"\bpid \d+", "pid <pid>", s)                      # pid 12345
+    s = re.sub(r"\bProcess \d+", "Process <pid>", s)             # "Process 12345" (crash)
+    s = re.sub(r"\bsock[0-9a-f]{6,}", "sock<id>", s)             # sock55f0a1b2c3d0
+    s = re.sub(r"server\.\d+\.\d+", "server.<pid>.<n>", s)       # tmp dir server.10822.103
+    s = re.sub(r"0x[0-9a-fA-F]{4,}", "0x<addr>", s)              # memory addresses
+    return s
+
+
+def _is_valid_test_name(name: str) -> bool:
+    """Return False for strings that are not real test identities.
+
+    Filters generic runner banners and volatile-only tokens (e.g. a bare
+    ``pid:12345``) that would otherwise pollute the failure heatmap.  Kept
+    deliberately narrow: a genuine Tcl/GTest/sentinel test name never
+    contains a ``:`` in its name portion, so these rules cannot reject one.
+    """
+    n = name.strip()
+    if not n:
+        return False
+    low = n.lower()
+    if any(sub in low for sub in _GENERIC_NOISE):
+        return False
+    if n.startswith("pid:") or re.fullmatch(r"pid[:=]\s*\d+", n):
+        return False
+    return True
+
+
+def sanitize_cached_failure(test_name: str) -> Optional[str]:
+    """Clean a failure name already stored in the cache for display.
+
+    Mirrors the parser's own filtering so rows written by an older parser
+    version render cleanly at report time without requiring a full re-parse:
+
+    * volatile tokens (pids/ports/addresses) are normalized so incidents
+      aggregate into one row
+    * generic runner banners and volatile-only tokens are dropped (return
+      None) — the run still shows as failed via its job conclusion
+
+    Returns the cleaned name, or None if the row should be dropped as noise.
+    """
+    cleaned = _scrub_volatile(test_name)
+    if not _is_valid_test_name(cleaned):
+        return None
+    return cleaned
+
+
 def _context_window(lines: List[str], center: int, radius: int = 5) -> str:
     """Return a window of *radius* lines around *center*, joined."""
     start = max(0, center - radius)
@@ -152,7 +223,7 @@ def _extract_error_block(lines: List[str], start: int) -> str:
     return "\n".join(detail_lines)
 
 
-def parse_job_log(raw_log: str) -> List[TestFailure]:
+def parse_job_log(raw_log: str, job_name: Optional[str] = None) -> List[TestFailure]:
     """Parse a raw CI job log and return extracted test failures.
 
     Handles:
@@ -162,7 +233,12 @@ def parse_job_log(raw_log: str) -> List[TestFailure]:
     * Google Test ``[  FAILED  ]`` markers
     * Sentinel/cluster ``FAILED:`` lines
     * Tcl ``[exception]`` stack traces with file references
-    * GitHub Actions ``##[error]`` annotations (fallback)
+    * A per-job "unattributed failure" fallback when the log clearly failed
+      but no test name could be extracted (see issue #1)
+
+    *job_name*, when provided, is used to key the unattributed-failure
+    fallback bucket so those failures aggregate per job across days instead
+    of splitting on a volatile runner message.
 
     Returns an empty list when no recognisable failure patterns are found.
     """
@@ -175,9 +251,23 @@ def parse_job_log(raw_log: str) -> List[TestFailure]:
     seen: set[str] = set()  # deduplicate by (test_name)
     failures: List[TestFailure] = []
 
+    # Did the log contain *any* failure signal?  Used to decide whether an
+    # unattributed-failure bucket is warranted when no name could be parsed.
+    signal_seen = bool(
+        _TCL_ERR_RE.search(cleaned)
+        or _SUMMARY_ERR_RE.search(cleaned)
+        or _TIMEOUT_RE.search(cleaned)
+        or _TCL_EXCEPTION_RE.search(cleaned)
+        or _SENTINEL_FAILED_RE.search(cleaned)
+        or _GHA_ERROR_RE.search(cleaned)
+        or re.search(r"^\[\s+FAILED\s+\]", cleaned, re.MULTILINE)
+    )
+
     def _add(test_name: str, error_summary: str, log_lines: str) -> None:
         key = test_name.strip()
-        if key and key not in seen:
+        if not _is_valid_test_name(key):
+            return
+        if key not in seen:
             seen.add(key)
             failures.append(TestFailure(
                 test_name=key,
@@ -245,6 +335,12 @@ def parse_job_log(raw_log: str) -> List[TestFailure]:
                     )
                     if spawn_match:
                         detail = f"spawn timeout in {spawn_match.group(1).strip()}"
+
+        # Bare spawn-timeout marker "pid:NNNNN - tests/file.tcl": attribute to
+        # the file rather than leaking the volatile pid as a "test name".
+        pid_spawn = re.match(r"pid:\d+\s*-\s*(.+)$", detail)
+        if pid_spawn:
+            detail = f"spawn timeout in {pid_spawn.group(1).strip()}"
 
         # Skip if the *** [TIMEOUT] summary already captured this test
         if any(detail in name for name in timeout_summary_names):
@@ -345,8 +441,9 @@ def parse_job_log(raw_log: str) -> List[TestFailure]:
         else:
             context = m.group(0)
 
-        # Normalize: strip dynamic values from error messages (ports, IPs)
-        normalized_error = re.sub(r"\d+\.\d+\.\d+\.\d+:\d+", "<host:port>", error_msg)
+        # Normalize: strip dynamic values (ports, IPs, pids, addresses) so
+        # repeated incidents aggregate into one row instead of one per run.
+        normalized_error = _scrub_volatile(error_msg)
 
         # Strip trailing Tcl $variable suffixes like "- $type"
         if test_name_from_stack:
@@ -364,13 +461,28 @@ def parse_job_log(raw_log: str) -> List[TestFailure]:
             test_name = f"Exception: {normalized_error[:80]}"
         _add(test_name, error_msg, context)
 
-    # 7. GitHub Actions ##[error] — fallback when no other patterns matched
-    if not failures:
-        for m in _GHA_ERROR_RE.finditer(cleaned):
-            error_msg = m.group(1).strip()
-            # Skip generic "Process completed with exit code" if we already have failures
-            idx = _find_line_index(lines, "##[error]")
-            context = _context_window(lines, idx, radius=15) if idx >= 0 else m.group(0)
-            _add(f"Process error: {error_msg}", error_msg, context)
+    # 7. Fallback: the job clearly failed but no test name could be extracted.
+    #    Do NOT invent a fake test row from a generic runner message. Record
+    #    exactly ONE stable per-job "unattributed failure" bucket so the failed
+    #    job stays visible in the counts and aggregates across days (instead of
+    #    splitting by exit code / pid). Keyed by job name when available.
+    if not failures and signal_seen:
+        summary_msg = ""
+        gha = _GHA_ERROR_RE.search(cleaned)
+        tmo = _TIMEOUT_RE.search(cleaned)
+        if gha:
+            summary_msg = gha.group(1).strip()
+        elif tmo:
+            summary_msg = f"TIMEOUT: {tmo.group(1).strip()}"
+        idx = _find_line_index(lines, "##[error]")
+        context = _context_window(lines, idx, radius=15) if idx >= 0 else summary_msg
+        bucket = (
+            f"{job_name}: unattributed failure" if job_name else "unattributed failure"
+        )
+        failures.append(TestFailure(
+            test_name=bucket,
+            error_summary=summary_msg,
+            log_lines=context.strip(),
+        ))
 
     return failures

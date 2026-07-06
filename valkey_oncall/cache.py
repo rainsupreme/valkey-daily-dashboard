@@ -71,7 +71,7 @@ _MIGRATIONS = [
 
 # Bump this when log_parser.py changes produce different test_name values.
 # On mismatch, test_failures and parse_status are wiped and re-parsed.
-PARSER_VERSION = 4
+PARSER_VERSION = 5
 
 
 def _now_iso() -> str:
@@ -235,6 +235,13 @@ class Cache:
             ],
         )
         self._conn.commit()
+
+    def get_job_name(self, job_id: int) -> Optional[str]:
+        """Return the job name for *job_id*, or None if unknown."""
+        row = self._conn.execute(
+            "SELECT name FROM jobs WHERE job_id = ?", (job_id,)
+        ).fetchone()
+        return row["name"] if row else None
 
     def query_jobs(self, run_id: int, failed_only: bool = False) -> List[Dict]:
         clauses = ["run_id = ?"]

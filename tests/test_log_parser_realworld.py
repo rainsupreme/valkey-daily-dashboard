@@ -9,6 +9,8 @@ Naming convention: test_<pattern>_<source_description>
 
 from __future__ import annotations
 
+import re
+
 from valkey_oncall.log_parser import TestFailure, parse_job_log
 
 
@@ -271,24 +273,53 @@ _GHA_ERROR_ONLY = """\
 
 
 class TestGHAErrorFallback:
-    """##[error] fallback when no Tcl/GTest/sentinel patterns match."""
+    """##[error] fallback when no Tcl/GTest/sentinel patterns match.
 
-    def test_captures_process_error(self) -> None:
+    Target behavior (issue #1): a generic runner exit-code message is NOT a
+    test. A failed job whose log yields no attributable test collapses into a
+    single stable per-job "unattributed failure" bucket, keyed by job name so
+    it aggregates across days instead of splitting by exit code. The failure
+    is never dropped — the run's failed-job count stays honest and the raw
+    message is preserved as error detail for click-through.
+    """
+
+    def test_generic_exit_code_becomes_per_job_bucket(self) -> None:
+        failures = parse_job_log(_GHA_ERROR_ONLY, job_name="test-valgrind-test")
+        assert len(failures) == 1
+        f = failures[0]
+        # The runner exit code is not a test identity...
+        assert "exit code" not in f.test_name
+        # ...it is bucketed under the job that failed.
+        assert f.test_name == "test-valgrind-test: unattributed failure"
+        # The raw message is preserved as error detail.
+        assert "exit code 1" in f.error_summary
+
+    def test_unattributed_bucket_without_job_name(self) -> None:
+        """Without a job name, a stable generic bucket is still used."""
         failures = parse_job_log(_GHA_ERROR_ONLY)
         assert len(failures) == 1
-        assert "Process completed with exit code 1" in failures[0].test_name
+        assert failures[0].test_name == "unattributed failure"
+        assert "exit code" not in failures[0].test_name
+
+    def test_exit_codes_1_and_2_share_one_bucket(self) -> None:
+        """exit code 1 and exit code 2 must not split into two heatmap rows."""
+        log2 = _GHA_ERROR_ONLY.replace("exit code 1", "exit code 2")
+        a = parse_job_log(_GHA_ERROR_ONLY, job_name="test-valgrind-test")
+        b = parse_job_log(log2, job_name="test-valgrind-test")
+        assert a[0].test_name == b[0].test_name
 
     def test_not_used_when_other_patterns_match(self) -> None:
-        """##[error] should NOT produce a failure when [err] already matched."""
+        """##[error] should NOT add a bucket when a real test already matched."""
         log = (
             "2026-04-01T00:00:00.0000000Z [err]: Some test in tests/unit/foo.tcl\n"
             "2026-04-01T00:00:00.0000001Z some error detail\n"
             "2026-04-01T00:00:01.0000000Z ##[error]Process completed with exit code 1.\n"
         )
-        failures = parse_job_log(log)
-        # Should only have the [err] failure, not the ##[error]
+        failures = parse_job_log(log, job_name="some-job")
+        # Should only have the [err] failure, not an unattributed bucket.
         assert len(failures) == 1
         assert "Some test" in failures[0].test_name
+        assert "unattributed" not in failures[0].test_name
 
 
 # ---------------------------------------------------------------------------
@@ -359,3 +390,144 @@ class TestSummaryErrWithTimestamps:
         assert len(failures) == 1
         assert "Primaries will not time out" in failures[0].test_name
         assert "failover2.tcl" in failures[0].test_name
+
+
+# ---------------------------------------------------------------------------
+# 10. Noise regression fixtures (issue #1)
+# These strings appeared as standalone "tests" on the live dashboard heatmap
+# where the parser mis-attributed non-test tokens as distinct failures.
+# Minimal reproductions distilled from those live rows.
+#
+# Policy (see design discussion):
+#   * generic runner banners are never test names
+#   * a real failure signal that can't be attributed becomes ONE per-job
+#     "unattributed failure" bucket (never dropped from the counts)
+#   * volatile tokens (pids/ports) are normalized so incidents aggregate
+# ---------------------------------------------------------------------------
+
+# 10a. Bare [TIMEOUT] "clients state report follows." with an unresolvable
+#      follow-up line (no (IN PROGRESS)/(SPAWNED SERVER) test to attribute to).
+_TIMEOUT_CLIENTS_STATE_UNRESOLVABLE = """\
+2026-07-02T03:11:00.0000000Z [TIMEOUT]: clients state report follows.
+2026-07-02T03:11:00.0000001Z sock55f0a1b2c3d0 => (SLEEPING) 12
+2026-07-02T03:11:00.0000002Z Killing still running Valkey server 12345
+"""
+
+
+class TestTimeoutClientsStateNoise:
+    """'clients state report follows.' must never become a test row."""
+
+    def test_generic_banner_not_a_test_name(self) -> None:
+        failures = parse_job_log(
+            _TIMEOUT_CLIENTS_STATE_UNRESOLVABLE, job_name="test-sanitizer-address"
+        )
+        assert all(
+            "clients state report follows" not in f.test_name.lower()
+            for f in failures
+        )
+
+    def test_timeout_still_recorded_as_unattributed(self) -> None:
+        # A TIMEOUT is a real failure signal, so it is not lost — when the
+        # real test can't be resolved it becomes the per-job bucket.
+        failures = parse_job_log(
+            _TIMEOUT_CLIENTS_STATE_UNRESOLVABLE, job_name="test-sanitizer-address"
+        )
+        assert len(failures) == 1
+        assert failures[0].test_name == "test-sanitizer-address: unattributed failure"
+
+
+# 10b. A bare pid token must never surface as a standalone "test".
+_TIMEOUT_BARE_PID = """\
+2026-07-01T04:00:00.0000000Z [TIMEOUT]: pid:51740 - tests/unit/type/stream.tcl
+2026-07-01T04:00:00.0000001Z Waiting for background AOF rewrite to finish
+"""
+
+
+class TestBarePidNoise:
+    """'pid:51740' style tokens are not test identities."""
+
+    def test_bare_pid_not_a_standalone_test_name(self) -> None:
+        failures = parse_job_log(_TIMEOUT_BARE_PID, job_name="test-external-standalone")
+        for f in failures:
+            assert not re.fullmatch(r"pid:\d+", f.test_name)
+            assert not f.test_name.startswith("pid:")
+
+
+# 10c. [exception] with no resolvable test/file, carrying a volatile pid.
+#      Must be normalized so repeated incidents aggregate into one row
+#      instead of a new row every night.
+_EXCEPTION_VOLATILE_PID = """\
+===== End of server stderr log (pid 15868) =====
+
+[exception]: Executing test client: assertion:Process 15868 (valkey-server) generated signal 6.
+assertion:Process 15868 (valkey-server) generated signal 6
+    while executing
+"debug reload"
+    ("uplevel" body line 12)
+    invoked from within
+"uplevel 1 $code"
+"""
+
+
+class TestExceptionVolatilePid:
+    """Unresolvable [exception] names must scrub volatile pids to aggregate."""
+
+    def test_pid_normalized_out_of_exception_name(self) -> None:
+        failures = parse_job_log(_EXCEPTION_VOLATILE_PID, job_name="test-macos")
+        assert len(failures) == 1
+        name = failures[0].test_name
+        assert "15868" not in name       # raw pid must be gone
+        assert "<pid>" in name           # normalized placeholder present
+
+    def test_different_pids_aggregate_to_same_name(self) -> None:
+        a = parse_job_log(_EXCEPTION_VOLATILE_PID, job_name="test-macos")
+        b = parse_job_log(
+            _EXCEPTION_VOLATILE_PID.replace("15868", "22991"), job_name="test-macos"
+        )
+        assert a[0].test_name == b[0].test_name
+
+
+# ---------------------------------------------------------------------------
+# 11. Display-time sanitizer (issue #1, Stage 3)
+# Cleans rows already stored in the cache by an older parser version, so the
+# dashboard renders cleanly even before a full re-parse. Uses the exact junk
+# names observed on the live dashboard.
+# ---------------------------------------------------------------------------
+
+from valkey_oncall.log_parser import sanitize_cached_failure
+
+
+class TestSanitizeCachedFailure:
+    """Display-time cleanup of stale cached failure names."""
+
+    def test_drops_legacy_process_error_row(self) -> None:
+        assert sanitize_cached_failure(
+            "Process error: Process completed with exit code 2."
+        ) is None
+
+    def test_drops_bare_generic_exit_code(self) -> None:
+        assert sanitize_cached_failure("Process completed with exit code 1.") is None
+
+    def test_drops_clients_state_banner(self) -> None:
+        assert sanitize_cached_failure("clients state report follows.") is None
+
+    def test_drops_bare_pid_token(self) -> None:
+        assert sanitize_cached_failure("pid:51740") is None
+        assert sanitize_cached_failure("pid:37814") is None
+
+    def test_normalizes_volatile_exception_name(self) -> None:
+        out = sanitize_cached_failure(
+            "Exception: Executing test client: assertion:Process 15868 crashed"
+        )
+        assert out is not None
+        assert "15868" not in out
+        assert "<pid>" in out
+
+    def test_volatile_exception_names_aggregate(self) -> None:
+        a = sanitize_cached_failure("Exception: assertion:Process 15868 crashed")
+        b = sanitize_cached_failure("Exception: assertion:Process 22991 crashed")
+        assert a == b
+
+    def test_keeps_real_test_name_unchanged(self) -> None:
+        name = "Test dual-channel-replication primary gets cob overrun in tests/integration/dual-channel-replication.tcl"
+        assert sanitize_cached_failure(name) == name
