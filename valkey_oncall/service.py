@@ -144,7 +144,8 @@ class OnCallService:
         if raw_log is None:
             return []
 
-        failures = parse_job_log(raw_log)
+        job_name = self._cache.get_job_name(job_id)
+        failures = parse_job_log(raw_log, job_name=job_name)
         if failures:
             failure_dicts = [
                 {

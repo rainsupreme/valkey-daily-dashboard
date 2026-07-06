@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from valkey_oncall.cache import Cache
+from valkey_oncall.log_parser import sanitize_cached_failure
 
 
 def generate_report_data(
@@ -71,7 +72,11 @@ def generate_report_data(
         run_failures: List[Dict] = []
         for j in failed_jobs:
             for f in cache.query_failures(job_id=j["job_id"]):
-                run_failures.append({**f, "job_name": j["name"]})
+                # Clean stale cached noise at display time (mirrors the parser).
+                clean = sanitize_cached_failure(f["test_name"])
+                if clean is None:
+                    continue
+                run_failures.append({**f, "test_name": clean, "job_name": j["name"]})
 
         # Group by test_name
         by_test: Dict[str, List[Dict]] = defaultdict(list)
@@ -153,7 +158,10 @@ def generate_report_data(
         date_key = r["run_date"][:10]
         for j in cache.query_jobs(r["run_id"], failed_only=True):
             for f in cache.query_failures(job_id=j["job_id"]):
-                lt_test_days[f["test_name"]].add(date_key)
+                clean = sanitize_cached_failure(f["test_name"])
+                if clean is None:
+                    continue
+                lt_test_days[clean].add(date_key)
 
     return {
         "dates": dates,
