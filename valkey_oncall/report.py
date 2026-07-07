@@ -6,11 +6,20 @@ import html
 import json
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from string import Template
 from typing import Dict, List
 
 from valkey_oncall.cache import Cache
 from valkey_oncall.log_parser import sanitize_cached_failure
 from valkey_oncall.scorecard import compute_scorecards
+
+_ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+
+
+def _asset(name: str) -> str:
+    """Read a bundled static asset (CSS/JS) shipped alongside this module."""
+    return (_ASSETS_DIR / name).read_text(encoding="utf-8")
 
 
 def generate_report_data(
@@ -305,7 +314,9 @@ def render_html(data: Dict) -> str:
         data.get("scorecard", {}).get("scorecards", [])
     )
 
-    return _HTML_TEMPLATE.format(
+    return Template(_HTML_TEMPLATE).substitute(
+        styles=_asset("report.css"),
+        script=_asset("report.js"),
         repo=html.escape(repo),
         branch=html.escape(summary["branch"]),
         workflow=html.escape(summary["workflow"]),
@@ -593,88 +604,20 @@ _HTML_TEMPLATE = """\
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Valkey CI Failure Report — {branch}</title>
+<title>Valkey CI Failure Report — ${branch}</title>
 <style>
-  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
-         background: #0d1117; color: #c9d1d9; padding: 20px; font-size: 13px; }}
-  h1 {{ font-size: 18px; margin-bottom: 4px; color: #f0f6fc; }}
-  .meta {{ color: #8b949e; margin-bottom: 16px; font-size: 12px; }}
-  .stats {{ display: flex; gap: 24px; margin-bottom: 20px; }}
-  .stat {{ background: #161b22; border: 1px solid #30363d; border-radius: 6px;
-           padding: 10px 16px; }}
-  .stat-val {{ font-size: 22px; font-weight: 600; color: #f0f6fc; }}
-  .stat-label {{ font-size: 11px; color: #8b949e; }}
-  table {{ border-collapse: collapse; margin-bottom: 24px; }}
-  th, td {{ padding: 3px 6px; text-align: center; font-size: 12px; }}
-  th {{ color: #8b949e; font-weight: 500; position: sticky; top: 0; background: #0d1117; }}
-  .test-name {{ text-align: left; max-width: 340px; overflow: hidden;
-                text-overflow: ellipsis; white-space: nowrap; font-family: monospace;
-                font-size: 11px; padding-right: 8px; }}
-  .freq {{ color: #8b949e; font-size: 11px; white-space: nowrap; padding-right: 4px; }}
-  .cell {{ width: 22px; height: 22px; min-width: 22px; border-radius: 3px;
-           font-size: 10px; line-height: 22px; cursor: default; }}
-  .date-col {{ width: 32px; min-width: 32px; max-width: 32px; font-size: 11px; white-space: nowrap; }}
-  .cell.fail {{ background: #da3633; color: #fff; font-weight: 600; }}
-  .cell.pass {{ background: #238636; }}
-  .cell.none {{ background: #21262d; }}
-  .badge {{ padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }}
-  .badge.pass {{ background: #238636; color: #fff; }}
-  .badge.fail {{ background: #da3633; color: #fff; }}
-  .section {{ margin-top: 24px; }}
-  .section h2 {{ font-size: 14px; color: #f0f6fc; margin-bottom: 8px; }}
-  .detail-table {{ width: 100%; }}
-  .detail-table th {{ text-align: left; border-bottom: 1px solid #30363d; padding: 6px 8px; }}
-  .detail-table td {{ text-align: left; border-bottom: 1px solid #21262d; padding: 6px 8px; }}
-  .jobs-cell {{ font-size: 11px; vertical-align: top; text-align: left; }}
-  .job-list {{ max-height: 150px; overflow-y: auto; }}
-  .job-entry {{ white-space: nowrap; padding: 1px 0; }}
-  .commits-cell {{ font-size: 11px; vertical-align: top; }}
-  .commit-list {{ max-height: 150px; overflow-y: auto; }}
-  .commit-entry {{ white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-                   max-width: 600px; padding: 1px 0; }}
-  .commit-author {{ color: #8b949e; }}
-  .no-commits {{ color: #484f58; }}
-  .failures-cell {{ font-size: 11px; vertical-align: top; text-align: left; }}
-  .failure-list {{ max-height: 150px; overflow-y: auto; }}
-  .failure-entry {{ white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-                    max-width: 400px; padding: 1px 0; color: #f85149; }}
-  .job-link {{ color: #58a6ff; text-decoration: none; font-size: 10px; font-family: monospace; }}
-  .job-link:hover {{ text-decoration: underline; }}
-  .sha {{ color: #58a6ff; text-decoration: none; font-family: monospace; font-size: 11px; }}
-  .sha:hover {{ text-decoration: underline; }}
-  .hint {{ color: #8b949e; font-size: 11px; margin-bottom: 12px; line-height: 1.5; max-width: 720px; }}
-  details {{ margin-top: 20px; }}
-  summary {{ cursor: pointer; color: #8b949e; font-size: 12px; }}
-  pre {{ background: #161b22; padding: 12px; border-radius: 6px; overflow-x: auto;
-         font-size: 11px; max-height: 400px; }}
-  .scorecard-table {{ width: 100%; }}
-  .scorecard-table th {{ text-align: left; border-bottom: 1px solid #30363d; padding: 6px 8px; }}
-  .scorecard-table td {{ text-align: left; border-bottom: 1px solid #21262d; padding: 4px 8px; vertical-align: middle; }}
-  .rank {{ color: #8b949e; font-size: 11px; }}
-  .badge-persistent {{ background:#da3633; color:#fff; padding:1px 7px; border-radius:10px; font-size:10px; font-weight:600; }}
-  .badge-flaky {{ background:#9e6a03; color:#fff; padding:1px 7px; border-radius:10px; font-size:10px; font-weight:600; }}
-  .badge-rare {{ background:#30363d; color:#c9d1d9; padding:1px 7px; border-radius:10px; font-size:10px; font-weight:600; }}
-  .trend-up {{ color:#f85149; font-weight:700; }}
-  .trend-down {{ color:#3fb950; font-weight:700; }}
-  .trend-flat {{ color:#8b949e; }}
-  .cat-chip {{ background:#161b22; border:1px solid #30363d; color:#8b949e; padding:1px 6px; border-radius:4px; font-size:10px; }}
-  .spark {{ vertical-align: middle; }}
-  #scorecard-controls {{ margin-bottom: 8px; font-size: 11px; color: #8b949e; }}
-  #scorecard-controls select, #scorecard-controls button {{ background:#161b22; color:#c9d1d9;
-    border:1px solid #30363d; border-radius:4px; font-size:11px; padding:2px 6px; margin:0 2px; cursor:pointer; }}
-  #scorecard-controls button:hover {{ background:#21262d; }}
+${styles}
 </style>
 </head>
 <body>
 <h1>Valkey CI Failure Report</h1>
-<p class="meta">{workflow} · {branch} · {repo} · last {days} days · generated {generated}</p>
-<p class="hint">Daily CI failure trends for the <b>{branch}</b> branch. Tracks which tests fail, how often, and whether they are getting better or worse.</p>
+<p class="meta">${workflow} · ${branch} · ${repo} · last ${days} days · generated ${generated}</p>
+<p class="hint">Daily CI failure trends for the <b>${branch}</b> branch. Tracks which tests fail, how often, and whether they are getting better or worse.</p>
 
 <div class="stats">
-  <div class="stat"><div class="stat-val">{total_runs}</div><div class="stat-label">runs</div></div>
-  <div class="stat"><div class="stat-val">{failed_runs}</div><div class="stat-label">failed</div></div>
-  <div class="stat"><div class="stat-val">{unique_tests}</div><div class="stat-label">unique failures</div></div>
+  <div class="stat"><div class="stat-val">${total_runs}</div><div class="stat-label">runs</div></div>
+  <div class="stat"><div class="stat-val">${failed_runs}</div><div class="stat-label">failed</div></div>
+  <div class="stat"><div class="stat-val">${unique_tests}</div><div class="stat-label">unique failures</div></div>
 </div>
 
 <table>
@@ -686,11 +629,11 @@ _HTML_TEMPLATE = """\
     Freq = days failed / total days.
   </caption>
   <thead>
-    <tr><th class="test-name">Test</th><th class="freq" title="Failure rate over last 14 days">14d</th><th class="freq" title="Failure rate over last 90 days">90d</th>{date_headers}</tr>
-    <tr><td class="test-name" style="color:#8b949e">Run status</td><td></td><td></td>{run_status_cells}</tr>
+    <tr><th class="test-name">Test</th><th class="freq" title="Failure rate over last 14 days">14d</th><th class="freq" title="Failure rate over last 90 days">90d</th>${date_headers}</tr>
+    <tr><td class="test-name" style="color:#8b949e">Run status</td><td></td><td></td>${run_status_cells}</tr>
   </thead>
   <tbody>
-    {test_rows}
+    ${test_rows}
   </tbody>
 </table>
 
@@ -717,7 +660,7 @@ _HTML_TEMPLATE = """\
   </div>
   <table class="scorecard-table">
     <thead><tr><th>#</th><th>Test</th><th>Class</th><th>Trend</th><th>Category</th><th title="Failure rate over last 90 days">90d rate</th><th>Days</th><th>90d activity</th></tr></thead>
-    <tbody id="scorecard-body">{scorecard_rows}</tbody>
+    <tbody id="scorecard-body">${scorecard_rows}</tbody>
   </table>
 </div>
 
@@ -726,54 +669,16 @@ _HTML_TEMPLATE = """\
   <p class="hint">Each row is one daily CI run. Status shows failed/total jobs. Numbered links like [1][2] go to the specific job logs on GitHub. Hover over a commit SHA to see the commit message.</p>
   <table class="detail-table">
     <thead><tr><th>Date</th><th>Status</th><th>Commit</th><th>#</th><th>Unique Failures</th><th>Failed Jobs</th><th>Commits since prev run</th></tr></thead>
-    <tbody>{run_detail_rows}</tbody>
+    <tbody>${run_detail_rows}</tbody>
   </table>
 </div>
 
 <details>
   <summary>Raw JSON data</summary>
-  <pre>{report_json}</pre>
+  <pre>${report_json}</pre>
 </details>
 <script>
-(function() {{
-  var body = document.getElementById('scorecard-body');
-  if (!body) return;
-  var rows = Array.prototype.slice.call(body.querySelectorAll('tr'));
-  var classSel = document.getElementById('sc-class');
-  var catSel = document.getElementById('sc-cat');
-
-  // Populate category filter from the rows present.
-  var cats = {{}};
-  rows.forEach(function(r) {{ cats[r.getAttribute('data-cat')] = true; }});
-  Object.keys(cats).sort().forEach(function(c) {{
-    var o = document.createElement('option');
-    o.value = c; o.textContent = c; catSel.appendChild(o);
-  }});
-
-  function applyFilter() {{
-    var cv = classSel.value, catv = catSel.value;
-    rows.forEach(function(r) {{
-      var ok = (!cv || r.getAttribute('data-class') === cv) &&
-               (!catv || r.getAttribute('data-cat') === catv);
-      r.style.display = ok ? '' : 'none';
-    }});
-  }}
-  classSel.addEventListener('change', applyFilter);
-  catSel.addEventListener('change', applyFilter);
-
-  var sortState = {{}};
-  function sortBy(key) {{
-    var desc = sortState[key] = !sortState[key];  // first click = descending
-    rows.slice().sort(function(a, b) {{
-      var av = parseFloat(a.getAttribute('data-' + key)) || 0;
-      var bv = parseFloat(b.getAttribute('data-' + key)) || 0;
-      return desc ? bv - av : av - bv;
-    }}).forEach(function(r) {{ body.appendChild(r); }});
-  }}
-  document.querySelectorAll('#scorecard-controls button[data-sort]').forEach(function(btn) {{
-    btn.addEventListener('click', function() {{ sortBy(btn.getAttribute('data-sort')); }});
-  }});
-}})();
+${script}
 </script>
 </body>
 </html>
