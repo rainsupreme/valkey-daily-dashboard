@@ -10,6 +10,7 @@ from typing import Dict, List
 
 from valkey_oncall.cache import Cache
 from valkey_oncall.log_parser import sanitize_cached_failure
+from valkey_oncall.scorecard import compute_scorecards
 
 
 def generate_report_data(
@@ -188,6 +189,11 @@ def generate_report_data(
             "failed_runs": sum(1 for r in run_details if r["status"] == "failure"),
             "unique_tests_failed": len(sorted_tests),
         },
+        # Full 90-day flakiness roster (the "board of shame"), independent of
+        # the recent-window heatmap above. Ranked worst-first by compute_scorecards.
+        "scorecard": compute_scorecards(
+            cache, days=90, branch=branch, workflow=workflow, repo=repo
+        ),
     }
 
 

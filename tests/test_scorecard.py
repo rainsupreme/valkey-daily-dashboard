@@ -145,7 +145,7 @@ class TestComputeScorecards:
         assert sc["total_hits"] == 3
         assert sc["total_runs"] == 5
         assert sc["failure_rate"] == 0.6
-        assert sc["classification"] == "flaky"
+        assert sc["classification"] == "persistent"  # 0.6 >= 0.5 band
         assert len(sc["daily_series"]) == 5
 
     def test_multiple_tests_sorted_by_rate(self, cache):
