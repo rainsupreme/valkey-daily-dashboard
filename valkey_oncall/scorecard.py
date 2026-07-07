@@ -10,8 +10,18 @@ from valkey_oncall.cache import Cache
 
 
 def _classify(rate: float) -> str:
-    """Classify a failure rate into a flakiness category."""
-    if rate >= 0.8:
+    """Classify a failure rate into a flakiness category.
+
+    Bands (rate = fraction of runs in which the test failed):
+      * persistent (>= 50%): fails the majority of runs -- a clean
+        green->red boundary, so blame is reliable; treat as a real
+        regression.
+      * flaky (1% - 50%): intermittent. The 1% floor matches the
+        "must pass 100 runs" fix bar, so anything at/above it is worth
+        fixing.
+      * rare (< 1%): clears the 100-run bar -- effectively noise.
+    """
+    if rate >= 0.5:
         return "persistent"
     if rate >= 0.01:
         return "flaky"

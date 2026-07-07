@@ -22,13 +22,14 @@ _BASE = datetime.now(timezone.utc) - timedelta(days=15)
 
 class TestClassify:
     def test_persistent(self):
+        assert _classify(0.5) == "persistent"  # boundary
         assert _classify(0.8) == "persistent"
         assert _classify(1.0) == "persistent"
 
     def test_flaky(self):
-        assert _classify(0.5) == "flaky"
-        assert _classify(0.01) == "flaky"
-        assert _classify(0.79) == "flaky"
+        assert _classify(0.01) == "flaky"  # 100-run-bar boundary
+        assert _classify(0.1) == "flaky"
+        assert _classify(0.49) == "flaky"
 
     def test_rare(self):
         assert _classify(0.009) == "rare"
