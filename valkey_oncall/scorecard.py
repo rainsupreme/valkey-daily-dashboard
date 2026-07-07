@@ -7,11 +7,22 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List
 
 from valkey_oncall.cache import Cache
+from valkey_oncall.log_parser import sanitize_cached_failure
 
 
 def _classify(rate: float) -> str:
-    """Classify a failure rate into a flakiness category."""
-    if rate >= 0.8:
+    """Classify a failure rate into a flakiness category.
+
+    Bands (rate = fraction of runs in which the test failed):
+      * persistent (>= 50%): fails the majority of runs -- a clean
+        green->red boundary, so blame is reliable; treat as a real
+        regression.
+      * flaky (1% - 50%): intermittent. The 1% floor matches the
+        "must pass 100 runs" fix bar, so anything at/above it is worth
+        fixing.
+      * rare (< 1%): clears the 100-run bar -- effectively noise.
+    """
+    if rate >= 0.5:
         return "persistent"
     if rate >= 0.01:
         return "flaky"
@@ -97,7 +108,9 @@ def compute_scorecards(
         for job in jobs:
             failures = cache.query_failures(job_id=job["job_id"])
             for f in failures:
-                name = f["test_name"]
+                name = sanitize_cached_failure(f["test_name"])
+                if name is None:
+                    continue
                 test_failures[name][date_key] += 1
                 if name not in test_first_seen or date_key < test_first_seen[name]:
                     test_first_seen[name] = date_key

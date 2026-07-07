@@ -188,3 +188,42 @@ class TestComputeBlame:
         assert len(result) == 1
         assert result[0]["blame_commits"] == []
         assert result[0]["commit_count"] == 0
+
+    def test_confidence_high_for_durable_regression(self, cache, mock_client):
+        """A test that keeps failing after onset -> high confidence."""
+        # offset 0 = oldest (see _day/_BASE). Green first, then fails every run.
+        cache.store_runs([_make_run(100, _day(0), "success", "s0")])
+        cache.store_jobs(100, [_make_job(200, 100, "success")])
+        for rid, off in [(101, 1), (102, 2), (103, 3), (104, 4)]:
+            cache.store_runs([_make_run(rid, _day(off), "failure", f"s{rid}")])
+            cache.store_jobs(rid, [_make_job(rid + 100, rid)])
+            cache.store_failures(
+                rid + 100,
+                [{"test_name": "test_Y", "error_summary": "e", "log_lines": "x"}],
+            )
+
+        result = compute_blame(cache, mock_client, days=30)
+        rec = next(r for r in result if r["test_name"] == "test_Y")
+        assert rec["post_onset_rate"] == 1.0
+        assert rec["confidence"] == "high"
+
+    def test_confidence_low_for_one_off_flake(self, cache, mock_client):
+        """A test that fails once then passes -> low confidence (unreliable blame)."""
+        # offset 0 = oldest. Green, one failure, then three passing runs.
+        cache.store_runs([_make_run(100, _day(0), "success", "s0")])
+        cache.store_jobs(100, [_make_job(200, 100, "success")])
+        cache.store_runs([_make_run(101, _day(1), "failure", "s1")])
+        cache.store_jobs(101, [_make_job(201, 101)])
+        cache.store_failures(
+            201,
+            [{"test_name": "test_X", "error_summary": "e", "log_lines": "x"}],
+        )
+        for rid, off in [(102, 2), (103, 3), (104, 4)]:
+            cache.store_runs([_make_run(rid, _day(off), "success", f"s{rid}")])
+            cache.store_jobs(rid, [_make_job(rid + 100, rid, "success")])
+
+        result = compute_blame(cache, mock_client, days=30)
+        rec = next(r for r in result if r["test_name"] == "test_X")
+        assert rec["post_onset_rate"] == 0.25  # 1 of 4 post-onset runs failed
+        assert rec["confidence"] == "low"
+        assert rec["last_pass_date"] == _day(0)

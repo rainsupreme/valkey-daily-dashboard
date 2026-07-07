@@ -1,0 +1,91 @@
+"""Tests for report data generation (scorecard leaderboard wiring)."""
+
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from valkey_oncall.cache import Cache
+from valkey_oncall.report import generate_report_data
+
+
+@pytest.fixture
+def cache(tmp_path):
+    return Cache(str(tmp_path / "test.db"))
+
+
+def _day(offset):
+    return (datetime.now(timezone.utc) - timedelta(days=offset)).strftime("%Y-%m-%d")
+
+
+def _make_run(run_id, date_str, status="failure"):
+    return {
+        "run_id": run_id,
+        "repo": "valkey-io/valkey",
+        "workflow_file": "daily.yml",
+        "status": status,
+        "branch": "unstable",
+        "commit_sha": f"sha{run_id}",
+        "run_date": f"{date_str}T06:00:00Z",
+    }
+
+
+def _make_job(job_id, run_id):
+    return {
+        "job_id": job_id,
+        "name": f"job-{job_id}",
+        "status": "completed",
+        "conclusion": "failure",
+    }
+
+
+def _store_failure(cache, run_id, job_id, date, test_name):
+    cache.store_runs([_make_run(run_id, date)])
+    cache.store_jobs(run_id, [_make_job(job_id, run_id)])
+    cache.store_failures(
+        job_id,
+        [{"test_name": test_name, "error_summary": "err", "log_lines": "x"}],
+    )
+
+
+class TestScorecardWiring:
+    def test_report_data_includes_scorecard_block(self, cache):
+        _store_failure(cache, 100, 200, _day(2), "recent in tests/unit/b.tcl")
+        data = generate_report_data(cache, days=14)
+        assert "scorecard" in data
+        assert "scorecards" in data["scorecard"]
+
+    def test_test_outside_recent_window_still_in_scorecard(self, cache):
+        # Failed 25 days ago: outside the 14-day heatmap, inside the 90-day roster.
+        _store_failure(cache, 100, 200, _day(25), "old_flaky in tests/unit/a.tcl")
+        # A recent failure so the heatmap window is non-empty.
+        _store_failure(cache, 101, 201, _day(2), "recent in tests/unit/b.tcl")
+
+        data = generate_report_data(cache, days=14)
+
+        # Heatmap (recent) does NOT show the old test...
+        assert "old_flaky in tests/unit/a.tcl" not in data["tests"]
+        assert "recent in tests/unit/b.tcl" in data["tests"]
+
+        # ...but the 90-day scorecard leaderboard does.
+        roster = {s["test_name"] for s in data["scorecard"]["scorecards"]}
+        assert "old_flaky in tests/unit/a.tcl" in roster
+        assert "recent in tests/unit/b.tcl" in roster
+
+    def test_scorecard_carries_analytics_fields(self, cache):
+        _store_failure(cache, 100, 200, _day(3), "some test in tests/unit/c.tcl")
+        data = generate_report_data(cache, days=14)
+        sc = data["scorecard"]["scorecards"][0]
+        for field in (
+            "classification",
+            "trend",
+            "category",
+            "first_seen",
+            "daily_series",
+        ):
+            assert field in sc
+
+    def test_scorecard_drops_junk_names(self, cache):
+        _store_failure(cache, 100, 200, _day(3), "pid:99999")
+        data = generate_report_data(cache, days=14)
+        roster = {s["test_name"] for s in data["scorecard"]["scorecards"]}
+        assert "pid:99999" not in roster

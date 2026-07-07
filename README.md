@@ -119,7 +119,7 @@ valkey-oncall scorecard --no-sync
 
 Each scorecard includes:
 - `failure_rate` — proportion of runs where the test failed (0.0–1.0)
-- `classification` — "persistent" (≥80%), "flaky" (20–80%), or "rare" (<20%)
+- `classification` — "persistent" (≥50%), "flaky" (1–50%), or "rare" (<1%)
 - `trend` — linear regression slope (positive = getting worse)
 - `first_seen` / `last_seen` — date boundaries of the test's failures
 - `category` — extracted from test file path (unit/cluster/sentinel/other)
