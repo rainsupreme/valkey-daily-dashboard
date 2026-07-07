@@ -105,6 +105,10 @@ _GHA_ERROR_RE = re.compile(
     r"^##\[error\](.+)", re.MULTILINE
 )
 
+# Valkey crash log signature: "# valkey 255.255.255 crashed by signal: 11, si_code: 0"
+_CRASH_RE = re.compile(r"crashed by signal:\s*(\d+)")
+_CRASH_ADDR_RE = re.compile(r"Accessing address:\s*(\S+)")
+
 
 # ---------------------------------------------------------------------------
 # Noise filtering / normalization (issue #1)
@@ -257,6 +261,7 @@ def parse_job_log(raw_log: str, job_name: Optional[str] = None) -> List[TestFail
         _TCL_ERR_RE.search(cleaned)
         or _SUMMARY_ERR_RE.search(cleaned)
         or _TIMEOUT_RE.search(cleaned)
+        or _SUMMARY_TIMEOUT_RE.search(cleaned)
         or _TCL_EXCEPTION_RE.search(cleaned)
         or _SENTINEL_FAILED_RE.search(cleaned)
         or _GHA_ERROR_RE.search(cleaned)
@@ -305,8 +310,10 @@ def parse_job_log(raw_log: str, job_name: Optional[str] = None) -> List[TestFail
     for m in _SUMMARY_TIMEOUT_RE.finditer(cleaned):
         test_name = m.group(1).strip()
         test_file = m.group(2).strip()
-        # Strip "pid:NNNNN - tests/file.tcl" pattern (spawn timeout, not a real test name)
-        if re.match(r"pid:\d+\s*-\s*", test_name):
+        # Strip spawn-timeout pid tokens (not a real test name):
+        #   "pid:NNNNN - tests/file.tcl"  (pid + inline file), or
+        #   "pid:NNNNN"                    (bare pid; file is in group 2)
+        if re.match(r"pid:\d+\s*-\s*", test_name) or re.fullmatch(r"pid:\d+", test_name):
             test_name = f"spawn timeout"
         full_name = f"{test_name} in {test_file}"
         timeout_summary_names.add(full_name)
@@ -467,18 +474,37 @@ def parse_job_log(raw_log: str, job_name: Optional[str] = None) -> List[TestFail
     #    job stays visible in the counts and aggregates across days (instead of
     #    splitting by exit code / pid). Keyed by job name when available.
     if not failures and signal_seen:
-        summary_msg = ""
-        gha = _GHA_ERROR_RE.search(cleaned)
-        tmo = _TIMEOUT_RE.search(cleaned)
-        if gha:
-            summary_msg = gha.group(1).strip()
-        elif tmo:
-            summary_msg = f"TIMEOUT: {tmo.group(1).strip()}"
-        idx = _find_line_index(lines, "##[error]")
-        context = _context_window(lines, idx, radius=15) if idx >= 0 else summary_msg
-        bucket = (
-            f"{job_name}: unattributed failure" if job_name else "unattributed failure"
-        )
+        crash = _CRASH_RE.search(cleaned)
+        if crash:
+            # A server crash with no attributable test -> dedicated crash bucket.
+            # A log may contain several "crashed by signal" lines (intentional
+            # crash-tests that pass earlier in the run); the one that actually
+            # ended the run is the LAST. Derive signal + address from that block.
+            crash_line_idxs = [
+                i for i, l in enumerate(lines) if "crashed by signal:" in l
+            ]
+            cidx = crash_line_idxs[-1]
+            signal_no = _CRASH_RE.search(lines[cidx]).group(1)
+            block = "\n".join(lines[cidx:cidx + 8])
+            addr_m = _CRASH_ADDR_RE.search(block)
+            addr = f", address {addr_m.group(1)}" if addr_m else ""
+            summary_msg = f"crashed by signal: {signal_no}{addr}"
+            context = _context_window(lines, cidx, radius=15)
+            bucket = f"{job_name}: server crash" if job_name else "server crash"
+        else:
+            gha = _GHA_ERROR_RE.search(cleaned)
+            tmo = _TIMEOUT_RE.search(cleaned)
+            if gha:
+                summary_msg = gha.group(1).strip()
+            elif tmo:
+                summary_msg = f"TIMEOUT: {tmo.group(1).strip()}"
+            else:
+                summary_msg = ""
+            idx = _find_line_index(lines, "##[error]")
+            context = _context_window(lines, idx, radius=15) if idx >= 0 else summary_msg
+            bucket = (
+                f"{job_name}: unattributed failure" if job_name else "unattributed failure"
+            )
         failures.append(TestFailure(
             test_name=bucket,
             error_summary=summary_msg,
