@@ -6,7 +6,7 @@ import html
 import json
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from valkey_oncall.cache import Cache
 from valkey_oncall.log_parser import sanitize_cached_failure
@@ -94,9 +94,9 @@ def generate_report_data(
 
         # Record in timeline
         for test_name, instances in by_test.items():
-            error_summaries = sorted(set(
-                inst["error_summary"][:120] for inst in instances
-            ))
+            error_summaries = sorted(
+                set(inst["error_summary"][:120] for inst in instances)
+            )
             job_names = sorted(set(inst["job_name"] for inst in instances))
             test_timeline[test_name][date_key] = {
                 "count": len(instances),
@@ -143,7 +143,9 @@ def generate_report_data(
     long_term_since = (datetime.now(timezone.utc) - timedelta(days=90)).strftime(
         "%Y-%m-%dT00:00:00Z"
     )
-    lt_runs = cache.query_runs(repo=repo, workflow=workflow, branch=branch, since=long_term_since)
+    lt_runs = cache.query_runs(
+        repo=repo, workflow=workflow, branch=branch, since=long_term_since
+    )
     lt_seen_dates: set[str] = set()
     for r in lt_runs:
         if r["status"] not in ("in_progress", "queued", "skipped", "action_required"):
@@ -170,10 +172,10 @@ def generate_report_data(
             name: {
                 "total": test_totals[name],
                 "days_failed": len(test_timeline[name]),
-                "score_90d": round(len(lt_test_days.get(name, set())) / lt_total * 100, 1),
-                "timeline": {
-                    d: test_timeline[name].get(d) for d in dates
-                },
+                "score_90d": round(
+                    len(lt_test_days.get(name, set())) / lt_total * 100, 1
+                ),
+                "timeline": {d: test_timeline[name].get(d) for d in dates},
             }
             for name in sorted_tests
         },
@@ -183,9 +185,7 @@ def generate_report_data(
             "branch": branch,
             "workflow": workflow,
             "total_runs": len(run_details),
-            "failed_runs": sum(
-                1 for r in run_details if r["status"] == "failure"
-            ),
+            "failed_runs": sum(1 for r in run_details if r["status"] == "failure"),
             "unique_tests_failed": len(sorted_tests),
         },
     }
@@ -210,7 +210,7 @@ def render_html(data: Dict) -> str:
     run_status_cells = ""
     for run in runs:
         cls = "pass" if run["status"] == "success" else "fail"
-        title = f'{run["date"]}: {run["status"]} ({run["failed_jobs"]}/{run["total_jobs"]} jobs failed)'
+        title = f"{run['date']}: {run['status']} ({run['failed_jobs']}/{run['total_jobs']} jobs failed)"
         run_status_cells += f'<td class="cell {cls}" title="{html.escape(title)}"></td>'
 
     # Build test rows
@@ -219,9 +219,9 @@ def render_html(data: Dict) -> str:
         # Shorten the display name
         short_name = _short_test_name(test_name)
         freq_pct = round(info["days_failed"] / len(dates) * 100) if dates else 0
-        freq = f'{freq_pct}%'
+        freq = f"{freq_pct}%"
         score_90d = info.get("score_90d", 0)
-        score_str = f'{score_90d:.0f}%' if score_90d >= 1 else f'{score_90d:.1f}%'
+        score_str = f"{score_90d:.0f}%" if score_90d >= 1 else f"{score_90d:.1f}%"
 
         cells = ""
         for d in dates:
@@ -232,9 +232,9 @@ def render_html(data: Dict) -> str:
                 n = entry["count"]
                 jobs = ", ".join(entry["jobs"][:3])
                 if len(entry["jobs"]) > 3:
-                    jobs += f" +{len(entry['jobs'])-3}"
+                    jobs += f" +{len(entry['jobs']) - 3}"
                 errs = "; ".join(entry["errors"][:2])
-                tip = html.escape(f'{n}x on {d}\nJobs: {jobs}\nError: {errs}')
+                tip = html.escape(f"{n}x on {d}\nJobs: {jobs}\nError: {errs}")
                 cells += f'<td class="cell fail" title="{tip}">{n}</td>'
 
         test_rows += f"""<tr>
@@ -259,7 +259,7 @@ def render_html(data: Dict) -> str:
                 jobs_html += f'<div class="job-entry">{html.escape(jn)}</div>'
             if jobs_extra > 0:
                 jobs_html += f'<div class="job-entry" style="color:#8b949e">+{jobs_extra} more</div>'
-            jobs_html += '</div>'
+            jobs_html += "</div>"
         else:
             jobs_html = "—"
         sha = run.get("commit_sha", "")
@@ -281,7 +281,7 @@ def render_html(data: Dict) -> str:
                     f'<span class="commit-author">{author}</span> '
                     f'<span title="{msg_tip}">{msg_short}</span></div>'
                 )
-            commits_html += '</div>'
+            commits_html += "</div>"
         else:
             commits_html = '<span class="no-commits">—</span>'
 
@@ -321,7 +321,7 @@ def render_markdown(data: Dict) -> str:
     runs = data["runs"]
 
     lines: List[str] = []
-    lines.append(f"# Valkey CI Failure Report")
+    lines.append("# Valkey CI Failure Report")
     lines.append("")
     lines.append(
         f"`{summary['workflow']}` · `{summary['branch']}` · `{repo}` · "
@@ -348,7 +348,7 @@ def render_markdown(data: Dict) -> str:
         lines.append(sep)
         for test_name, info in tests.items():
             short = _short_test_name(test_name)
-            freq = f'{info["days_failed"]}/{len(dates)}d'
+            freq = f"{info['days_failed']}/{len(dates)}d"
             cells = []
             for d in dates:
                 entry = info["timeline"][d]
@@ -365,9 +365,15 @@ def render_markdown(data: Dict) -> str:
     lines.append("| Date | Status | Commit | # | Failures |")
     lines.append("|------|--------|--------|---|----------|")
     for run in reversed(runs):
-        status = "✅" if run["status"] == "success" else f"❌ {run['failed_jobs']}/{run['total_jobs']}"
+        status = (
+            "✅"
+            if run["status"] == "success"
+            else f"❌ {run['failed_jobs']}/{run['total_jobs']}"
+        )
         sha = run.get("commit_sha", "")
-        sha_md = f"[`{sha[:7]}`](https://github.com/{repo}/commit/{sha})" if sha else "—"
+        sha_md = (
+            f"[`{sha[:7]}`](https://github.com/{repo}/commit/{sha})" if sha else "—"
+        )
         run_id = run.get("run_id", 0)
         failure_jobs = run.get("failure_jobs", {})
         failure_parts = []
@@ -376,7 +382,7 @@ def render_markdown(data: Dict) -> str:
             job_ids = failure_jobs.get(n, [])
             if job_ids:
                 job_links = "".join(
-                    f"[[{i+1}]](https://github.com/{repo}/actions/runs/{run_id}/job/{jid})"
+                    f"[[{i + 1}]](https://github.com/{repo}/actions/runs/{run_id}/job/{jid})"
                     for i, jid in enumerate(job_ids)
                 )
                 short += f" {job_links}"
@@ -384,7 +390,9 @@ def render_markdown(data: Dict) -> str:
         if len(run.get("failure_names", [])) > 5:
             failure_parts.append(f"+{len(run['failure_names']) - 5} more")
         failures = ", ".join(failure_parts) if failure_parts else "—"
-        lines.append(f"| {run['date']} | {status} | {sha_md} | {run['unique_failures']} | {failures} |")
+        lines.append(
+            f"| {run['date']} | {status} | {sha_md} | {run['unique_failures']} | {failures} |"
+        )
 
     lines.append("")
     return "\n".join(lines)
@@ -399,7 +407,7 @@ def render_slack(data: Dict) -> str:
     runs = data["runs"]
 
     lines: List[str] = []
-    lines.append(f"*Valkey CI Failure Report*")
+    lines.append("*Valkey CI Failure Report*")
     lines.append(
         f"`{summary['workflow']}` · `{summary['branch']}` · `{repo}` · "
         f"last {summary['days']} days · "
@@ -418,7 +426,7 @@ def render_slack(data: Dict) -> str:
         lines.append("*Top Failing Tests:*")
         for test_name, info in list(tests.items())[:15]:
             short = _short_test_name(test_name)
-            freq = f'{info["days_failed"]}/{len(dates)}d'
+            freq = f"{info['days_failed']}/{len(dates)}d"
             lines.append(f"• `{short}` — {freq}, {info['total']} total hits")
 
     # Recent runs
@@ -427,10 +435,7 @@ def render_slack(data: Dict) -> str:
     for run in list(reversed(runs))[:10]:
         status = ":white_check_mark:" if run["status"] == "success" else ":x:"
         sha = run.get("commit_sha", "")
-        sha_link = (
-            f"<https://github.com/{repo}/commit/{sha}|{sha[:7]}>"
-            if sha else "—"
-        )
+        sha_link = f"<https://github.com/{repo}/commit/{sha}|{sha[:7]}>" if sha else "—"
         detail = ""
         if run["unique_failures"] > 0:
             run_id = run.get("run_id", 0)
@@ -441,7 +446,7 @@ def render_slack(data: Dict) -> str:
                 job_ids = failure_jobs.get(n, [])
                 if job_ids:
                     job_links = "".join(
-                        f"<https://github.com/{repo}/actions/runs/{run_id}/job/{jid}|[{i+1}]>"
+                        f"<https://github.com/{repo}/actions/runs/{run_id}/job/{jid}|[{i + 1}]>"
                         for i, jid in enumerate(job_ids)
                     )
                     short += f" {job_links}"
@@ -501,7 +506,7 @@ def _render_failure_names(
         if job_ids:
             links = " ".join(
                 f'<a href="https://github.com/{repo}/actions/runs/{run_id}/job/{jid}" '
-                f'class="job-link">[{i+1}]</a>'
+                f'class="job-link">[{i + 1}]</a>'
                 for i, jid in enumerate(job_ids)
             )
             items += f'<div class="failure-entry">{short} {links}</div>'

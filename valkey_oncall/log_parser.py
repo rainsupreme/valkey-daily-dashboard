@@ -35,9 +35,7 @@ _GHA_TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s?")
 
 def _strip_timestamps(raw_log: str) -> str:
     """Remove GitHub Actions timestamp prefixes from every line."""
-    return "\n".join(
-        _GHA_TIMESTAMP_RE.sub("", line) for line in raw_log.splitlines()
-    )
+    return "\n".join(_GHA_TIMESTAMP_RE.sub("", line) for line in raw_log.splitlines())
 
 
 # ---------------------------------------------------------------------------
@@ -46,9 +44,7 @@ def _strip_timestamps(raw_log: str) -> str:
 
 # Tcl test framework: "[err]: <test_name> in <file>"
 # This appears inline during test execution.
-_TCL_ERR_RE = re.compile(
-    r"^\[err\]:\s*(.+?)\s+in\s+(tests/.+\.tcl)\s*$", re.MULTILINE
-)
+_TCL_ERR_RE = re.compile(r"^\[err\]:\s*(.+?)\s+in\s+(tests/.+\.tcl)\s*$", re.MULTILINE)
 
 # Summary lines at the end: "*** [err]: <test_name> in <file>"
 _SUMMARY_ERR_RE = re.compile(
@@ -56,9 +52,7 @@ _SUMMARY_ERR_RE = re.compile(
 )
 
 # Timeout marker: "[TIMEOUT]: ..."
-_TIMEOUT_RE = re.compile(
-    r"^\[TIMEOUT\]:\s*(.+)", re.MULTILINE
-)
+_TIMEOUT_RE = re.compile(r"^\[TIMEOUT\]:\s*(.+)", re.MULTILINE)
 
 # Timeout summary: "*** [TIMEOUT]: test_name in tests/file.tcl"
 _SUMMARY_TIMEOUT_RE = re.compile(
@@ -71,39 +65,25 @@ _IN_PROGRESS_RE = re.compile(
 )
 
 # Google Test failure marker: "[  FAILED  ] TestSuite.TestName"
-_GTEST_FAILED_RE = re.compile(
-    r"^\[\s+FAILED\s+\]\s+(\S+)", re.MULTILINE
-)
+_GTEST_FAILED_RE = re.compile(r"^\[\s+FAILED\s+\]\s+(\S+)", re.MULTILINE)
 
 # Sentinel / cluster test "FAILED:" lines
-_SENTINEL_FAILED_RE = re.compile(
-    r"^(.+?):\s*FAILED:\s*(.+)", re.MULTILINE
-)
+_SENTINEL_FAILED_RE = re.compile(r"^(.+?):\s*FAILED:\s*(.+)", re.MULTILINE)
 
 # Tcl exception: "[exception]: Executing test client: <message>"
-_TCL_EXCEPTION_RE = re.compile(
-    r"^\[exception\]:\s*(.+)", re.MULTILINE
-)
+_TCL_EXCEPTION_RE = re.compile(r"^\[exception\]:\s*(.+)", re.MULTILINE)
 
 # Tcl file reference in stack trace: '(file "tests/unit/foo.tcl" line 123)'
-_TCL_FILE_REF_RE = re.compile(
-    r'\(file\s+"(tests/.+?\.tcl)"\s+line\s+\d+\)'
-)
+_TCL_FILE_REF_RE = re.compile(r'\(file\s+"(tests/.+?\.tcl)"\s+line\s+\d+\)')
 
 # Tcl test name in stack trace: 'test "test name here" {' or '"test "name" {'
-_TCL_STACK_TEST_RE = re.compile(
-    r'(?:^"|^)test\s+"([^"]+)"', re.MULTILINE
-)
+_TCL_STACK_TEST_RE = re.compile(r'(?:^"|^)test\s+"([^"]+)"', re.MULTILINE)
 
 # Tcl procedure call with test name: 'test_slave_buffers {name here} args'
-_TCL_PROC_CALL_RE = re.compile(
-    r'^"?(\w+)\s+\{([^}]+)\}', re.MULTILINE
-)
+_TCL_PROC_CALL_RE = re.compile(r'^"?(\w+)\s+\{([^}]+)\}', re.MULTILINE)
 
 # GitHub Actions error annotation: "##[error]Process completed with exit code N"
-_GHA_ERROR_RE = re.compile(
-    r"^##\[error\](.+)", re.MULTILINE
-)
+_GHA_ERROR_RE = re.compile(r"^##\[error\](.+)", re.MULTILINE)
 
 # Valkey crash log signature: "# valkey 255.255.255 crashed by signal: 11, si_code: 0"
 _CRASH_RE = re.compile(r"crashed by signal:\s*(\d+)")
@@ -134,12 +114,12 @@ def _scrub_volatile(text: str) -> str:
     """
     s = text
     s = re.sub(r"\d{1,3}(?:\.\d{1,3}){3}:\d+", "<host:port>", s)  # ip:port
-    s = re.sub(r"\bpid[:=]\s*\d+", "pid:<pid>", s)                # pid:12345 / pid=12345
-    s = re.sub(r"\bpid \d+", "pid <pid>", s)                      # pid 12345
-    s = re.sub(r"\bProcess \d+", "Process <pid>", s)             # "Process 12345" (crash)
-    s = re.sub(r"\bsock[0-9a-f]{6,}", "sock<id>", s)             # sock55f0a1b2c3d0
-    s = re.sub(r"server\.\d+\.\d+", "server.<pid>.<n>", s)       # tmp dir server.10822.103
-    s = re.sub(r"0x[0-9a-fA-F]{4,}", "0x<addr>", s)              # memory addresses
+    s = re.sub(r"\bpid[:=]\s*\d+", "pid:<pid>", s)  # pid:12345 / pid=12345
+    s = re.sub(r"\bpid \d+", "pid <pid>", s)  # pid 12345
+    s = re.sub(r"\bProcess \d+", "Process <pid>", s)  # "Process 12345" (crash)
+    s = re.sub(r"\bsock[0-9a-f]{6,}", "sock<id>", s)  # sock55f0a1b2c3d0
+    s = re.sub(r"server\.\d+\.\d+", "server.<pid>.<n>", s)  # tmp dir server.10822.103
+    s = re.sub(r"0x[0-9a-fA-F]{4,}", "0x<addr>", s)  # memory addresses
     return s
 
 
@@ -205,9 +185,17 @@ def _extract_error_block(lines: List[str], start: int) -> str:
     """
     detail_lines: List[str] = []
     # Status markers that signal the start of a new test result
-    stop_markers = ("[ok]", "[err]", "[skip]", "[ignore]", "[TIMEOUT]",
-                    "Passed ", "Testing ", "*** [")
-    for line in lines[start + 1:]:
+    stop_markers = (
+        "[ok]",
+        "[err]",
+        "[skip]",
+        "[ignore]",
+        "[TIMEOUT]",
+        "Passed ",
+        "Testing ",
+        "*** [",
+    )
+    for line in lines[start + 1 :]:
         stripped = line.strip()
         if not stripped:
             # Allow one blank line, but stop on a second consecutive blank
@@ -274,11 +262,13 @@ def parse_job_log(raw_log: str, job_name: Optional[str] = None) -> List[TestFail
             return
         if key not in seen:
             seen.add(key)
-            failures.append(TestFailure(
-                test_name=key,
-                error_summary=error_summary.strip(),
-                log_lines=log_lines.strip(),
-            ))
+            failures.append(
+                TestFailure(
+                    test_name=key,
+                    error_summary=error_summary.strip(),
+                    log_lines=log_lines.strip(),
+                )
+            )
 
     # 1. Tcl [err] markers (inline during test run)
     for m in _TCL_ERR_RE.finditer(cleaned):
@@ -313,8 +303,10 @@ def parse_job_log(raw_log: str, job_name: Optional[str] = None) -> List[TestFail
         # Strip spawn-timeout pid tokens (not a real test name):
         #   "pid:NNNNN - tests/file.tcl"  (pid + inline file), or
         #   "pid:NNNNN"                    (bare pid; file is in group 2)
-        if re.match(r"pid:\d+\s*-\s*", test_name) or re.fullmatch(r"pid:\d+", test_name):
-            test_name = f"spawn timeout"
+        if re.match(r"pid:\d+\s*-\s*", test_name) or re.fullmatch(
+            r"pid:\d+", test_name
+        ):
+            test_name = "spawn timeout"
         full_name = f"{test_name} in {test_file}"
         timeout_summary_names.add(full_name)
         idx = _find_line_index(lines, m.group(0).strip())
@@ -383,7 +375,9 @@ def parse_job_log(raw_log: str, job_name: Optional[str] = None) -> List[TestFail
             test_name = re.sub(r"\s*\(\d+\s*ms\)\s*$", "", test_name)
             if test_name and not re.match(r"^\d+\s+test", test_name):
                 idx = _find_line_index(lines, m.group(0).strip())
-                context = _context_window(lines, idx, radius=5) if idx >= 0 else m.group(0)
+                context = (
+                    _context_window(lines, idx, radius=5) if idx >= 0 else m.group(0)
+                )
                 _add(test_name, f"GTest FAILED: {test_name}", context)
 
     # 5. Sentinel/cluster "FAILED:" lines
@@ -407,7 +401,7 @@ def parse_job_log(raw_log: str, job_name: Optional[str] = None) -> List[TestFail
         test_file = ""
         test_name_from_stack = ""
         if idx >= 0:
-            stack_window = lines[idx:min(idx + 60, len(lines))]
+            stack_window = lines[idx : min(idx + 60, len(lines))]
             stack_text = "\n".join(stack_window)
 
             # Look for file reference
@@ -421,19 +415,31 @@ def parse_job_log(raw_log: str, job_name: Optional[str] = None) -> List[TestFail
             # e.g. 'test_slave_buffers {slave buffer are counted correctly} 1000000 10 0 1'
             #       ^^^ procedure        ^^^ test name in braces
             # Skip Tcl control structures (foreach, if, while, etc.)
-            _TCL_CONTROL = {"foreach", "if", "while", "for", "switch", "start_server", "cluster_setup"}
+            _TCL_CONTROL = {
+                "foreach",
+                "if",
+                "while",
+                "for",
+                "switch",
+                "start_server",
+                "cluster_setup",
+            }
             if test_file:
                 # Find the line index of the file reference within the window
                 for wi, wline in enumerate(stack_window):
-                    if test_file in wline and '(file' in wline:
+                    if test_file in wline and "(file" in wline:
                         # Look backwards from here for a quoted procedure call with {name}
                         for bi in range(wi - 1, -1, -1):
                             bline = stack_window[bi].strip().strip('"')
-                            proc_m = re.match(r'(\w+)\s+\{([^}]+)\}', bline)
+                            proc_m = re.match(r"(\w+)\s+\{([^}]+)\}", bline)
                             if proc_m:
                                 proc_name = proc_m.group(1)
                                 candidate = proc_m.group(2).strip()
-                                if proc_name not in _TCL_CONTROL and "$" not in candidate and len(candidate) > 2:
+                                if (
+                                    proc_name not in _TCL_CONTROL
+                                    and "$" not in candidate
+                                    and len(candidate) > 2
+                                ):
                                     test_name_from_stack = candidate
                                     break
                         break
@@ -481,11 +487,11 @@ def parse_job_log(raw_log: str, job_name: Optional[str] = None) -> List[TestFail
             # crash-tests that pass earlier in the run); the one that actually
             # ended the run is the LAST. Derive signal + address from that block.
             crash_line_idxs = [
-                i for i, l in enumerate(lines) if "crashed by signal:" in l
+                i for i, line in enumerate(lines) if "crashed by signal:" in line
             ]
             cidx = crash_line_idxs[-1]
             signal_no = _CRASH_RE.search(lines[cidx]).group(1)
-            block = "\n".join(lines[cidx:cidx + 8])
+            block = "\n".join(lines[cidx : cidx + 8])
             addr_m = _CRASH_ADDR_RE.search(block)
             addr = f", address {addr_m.group(1)}" if addr_m else ""
             summary_msg = f"crashed by signal: {signal_no}{addr}"
@@ -501,14 +507,20 @@ def parse_job_log(raw_log: str, job_name: Optional[str] = None) -> List[TestFail
             else:
                 summary_msg = ""
             idx = _find_line_index(lines, "##[error]")
-            context = _context_window(lines, idx, radius=15) if idx >= 0 else summary_msg
-            bucket = (
-                f"{job_name}: unattributed failure" if job_name else "unattributed failure"
+            context = (
+                _context_window(lines, idx, radius=15) if idx >= 0 else summary_msg
             )
-        failures.append(TestFailure(
-            test_name=bucket,
-            error_summary=summary_msg,
-            log_lines=context.strip(),
-        ))
+            bucket = (
+                f"{job_name}: unattributed failure"
+                if job_name
+                else "unattributed failure"
+            )
+        failures.append(
+            TestFailure(
+                test_name=bucket,
+                error_summary=summary_msg,
+                log_lines=context.strip(),
+            )
+        )
 
     return failures

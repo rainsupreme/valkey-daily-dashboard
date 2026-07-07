@@ -6,13 +6,14 @@ from hypothesis import strategies as st
 
 from valkey_oncall.github_client import GitHubActionsClient
 
-
 # Strategy: generate either None or a non-empty ASCII token string.
 # Real GitHub tokens are ASCII-only, and HTTP headers require ASCII-encodable values.
 token_strategy = st.one_of(
     st.none(),
     st.text(
-        alphabet=st.characters(whitelist_categories=("L", "N", "P", "S"), max_codepoint=127),
+        alphabet=st.characters(
+            whitelist_categories=("L", "N", "P", "S"), max_codepoint=127
+        ),
         min_size=1,
         max_size=50,
     ),
@@ -73,7 +74,6 @@ from typing import Optional
 import pytest
 
 from valkey_oncall.github_client import GitHubAPIError, RateLimitError
-
 
 # ---------------------------------------------------------------------------
 # Helpers for unit tests
@@ -179,7 +179,10 @@ class TestPaginationAssembly:
                 runs = [{"id": i, "name": f"run-{i}"} for i in range(per_page)]
             else:
                 # Return fewer than per_page → signals last page
-                runs = [{"id": per_page + j, "name": f"run-{per_page + j}"} for j in range(3)]
+                runs = [
+                    {"id": per_page + j, "name": f"run-{per_page + j}"}
+                    for j in range(3)
+                ]
 
             return httpx.Response(
                 200,

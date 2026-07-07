@@ -11,7 +11,6 @@ from valkey_oncall.cache import Cache
 from valkey_oncall.github_client import GitHubActionsClient
 from valkey_oncall.log_parser import parse_job_log
 
-
 # Type alias for the optional progress callback
 ProgressCallback = Optional[Callable[[str], None]]
 
@@ -48,7 +47,9 @@ def _map_run(api_run: Dict, repo: str) -> Dict:
     return {
         "run_id": api_run["id"],
         "repo": repo,
-        "workflow_file": api_run.get("path", "").rsplit("/", 1)[-1] if api_run.get("path") else api_run.get("name", ""),
+        "workflow_file": api_run.get("path", "").rsplit("/", 1)[-1]
+        if api_run.get("path")
+        else api_run.get("name", ""),
         "status": api_run.get("conclusion") or api_run.get("status", "unknown"),
         "branch": api_run.get("head_branch", ""),
         "commit_sha": api_run.get("head_sha", ""),
@@ -110,7 +111,10 @@ class OnCallService:
 
         return self._cache.query_runs(
             repo=self._client.repo,
-            workflow=workflow_file, branch=branch, since=since, until=until,
+            workflow=workflow_file,
+            branch=branch,
+            since=since,
+            until=until,
         )
 
     def fetch_jobs(self, run_id: int) -> List[Dict]:
@@ -120,7 +124,9 @@ class OnCallService:
         of cached jobs for the run.  If previously cached jobs are still
         in progress, re-fetches from the API to pick up final results.
         """
-        if not self._cache.has_jobs_for_run(run_id) or self._cache.has_incomplete_jobs(run_id):
+        if not self._cache.has_jobs_for_run(run_id) or self._cache.has_incomplete_jobs(
+            run_id
+        ):
             api_jobs = self._client.get_jobs_for_run(run_id)
             mapped: List[Dict] = [_map_job(j) for j in api_jobs]
             if mapped:
@@ -195,17 +201,22 @@ class OnCallService:
                 if failures:
                     first_error = failures[0].get("error_summary", "")
 
-            results.append({
-                "job_id": job["job_id"],
-                "name": job["name"],
-                "conclusion": conclusion or "running",
-                "first_error": first_error,
-            })
+            results.append(
+                {
+                    "job_id": job["job_id"],
+                    "name": job["name"],
+                    "conclusion": conclusion or "running",
+                    "first_error": first_error,
+                }
+            )
 
         return results
 
     def fetch_log_grep(
-        self, job_id: int, pattern: str, context: int = 0,
+        self,
+        job_id: int,
+        pattern: str,
+        context: int = 0,
     ) -> List[str]:
         """Fetch a job log and return only lines matching *pattern*.
 
@@ -252,6 +263,7 @@ class OnCallService:
         If *progress* is provided, it is called with human-readable status
         messages during the sync (intended for stderr output).
         """
+
         def _log(msg: str) -> None:
             if progress:
                 progress(msg)
@@ -276,7 +288,12 @@ class OnCallService:
 
             # Snapshot cached run IDs before fetching so we can count new ones
             try:
-                existing_run_ids = {r["run_id"] for r in self._cache.query_runs(repo=self._client.repo, workflow=workflow_file)}
+                existing_run_ids = {
+                    r["run_id"]
+                    for r in self._cache.query_runs(
+                        repo=self._client.repo, workflow=workflow_file
+                    )
+                }
                 api_runs = self._client.get_workflow_runs(
                     workflow_file=workflow_file,
                     branch=branch,
@@ -347,7 +364,9 @@ class OnCallService:
         # Re-parse any cached logs that lost their parse results (e.g. parser version bump)
         unparsed_jobs = self._cache.query_unparsed_jobs_with_logs()
         if unparsed_jobs:
-            _log(f"Re-parsing {len(unparsed_jobs)} jobs with stale/missing parse results...")
+            _log(
+                f"Re-parsing {len(unparsed_jobs)} jobs with stale/missing parse results..."
+            )
             for job_id in unparsed_jobs:
                 try:
                     failures = self.parse_log(job_id)
@@ -355,6 +374,8 @@ class OnCallService:
                 except Exception as exc:
                     summary["errors"].append(f"reparse(job={job_id}): {exc}")
 
-        _log(f"Sync complete: {summary['new_runs_fetched']} runs, "
-             f"{summary['new_failures_parsed']} failures parsed")
+        _log(
+            f"Sync complete: {summary['new_runs_fetched']} runs, "
+            f"{summary['new_failures_parsed']} failures parsed"
+        )
         return summary

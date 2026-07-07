@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from valkey_oncall.cache import Cache
 
 
@@ -71,42 +69,52 @@ class TestCacheRuns:
 
     def test_query_runs_workflow_filter(self, temp_db_path: str) -> None:
         cache = Cache(temp_db_path)
-        cache.store_runs([
-            _sample_run(1, workflow_file="daily.yml"),
-            _sample_run(2, workflow_file="weekly.yml"),
-        ])
+        cache.store_runs(
+            [
+                _sample_run(1, workflow_file="daily.yml"),
+                _sample_run(2, workflow_file="weekly.yml"),
+            ]
+        )
         results = cache.query_runs(workflow="daily.yml")
         assert len(results) == 1
         assert results[0]["workflow_file"] == "daily.yml"
 
     def test_query_runs_status_filter(self, temp_db_path: str) -> None:
         cache = Cache(temp_db_path)
-        cache.store_runs([
-            _sample_run(1, status="success"),
-            _sample_run(2, status="failure"),
-        ])
+        cache.store_runs(
+            [
+                _sample_run(1, status="success"),
+                _sample_run(2, status="failure"),
+            ]
+        )
         results = cache.query_runs(status="failure")
         assert len(results) == 1
         assert results[0]["status"] == "failure"
 
     def test_query_runs_branch_filter(self, temp_db_path: str) -> None:
         cache = Cache(temp_db_path)
-        cache.store_runs([
-            _sample_run(1, branch="main"),
-            _sample_run(2, branch="unstable"),
-        ])
+        cache.store_runs(
+            [
+                _sample_run(1, branch="main"),
+                _sample_run(2, branch="unstable"),
+            ]
+        )
         results = cache.query_runs(branch="main")
         assert len(results) == 1
         assert results[0]["branch"] == "main"
 
     def test_query_runs_date_range(self, temp_db_path: str) -> None:
         cache = Cache(temp_db_path)
-        cache.store_runs([
-            _sample_run(1, run_date="2024-01-10T00:00:00Z"),
-            _sample_run(2, run_date="2024-01-15T00:00:00Z"),
-            _sample_run(3, run_date="2024-01-20T00:00:00Z"),
-        ])
-        results = cache.query_runs(since="2024-01-12T00:00:00Z", until="2024-01-18T00:00:00Z")
+        cache.store_runs(
+            [
+                _sample_run(1, run_date="2024-01-10T00:00:00Z"),
+                _sample_run(2, run_date="2024-01-15T00:00:00Z"),
+                _sample_run(3, run_date="2024-01-20T00:00:00Z"),
+            ]
+        )
+        results = cache.query_runs(
+            since="2024-01-12T00:00:00Z", until="2024-01-18T00:00:00Z"
+        )
         assert len(results) == 1
         assert results[0]["run_id"] == 2
 
@@ -127,10 +135,13 @@ class TestCacheJobs:
     def test_query_jobs_failed_only(self, temp_db_path: str) -> None:
         cache = Cache(temp_db_path)
         cache.store_runs([_sample_run(1)])
-        cache.store_jobs(1, [
-            _sample_job(100, conclusion="failure"),
-            _sample_job(101, conclusion="success"),
-        ])
+        cache.store_jobs(
+            1,
+            [
+                _sample_job(100, conclusion="failure"),
+                _sample_job(101, conclusion="success"),
+            ],
+        )
         failed = cache.query_jobs(1, failed_only=True)
         assert len(failed) == 1
         assert failed[0]["conclusion"] == "failure"
@@ -182,10 +193,13 @@ class TestCacheFailures:
         cache = Cache(temp_db_path)
         cache.store_runs([_sample_run(1)])
         cache.store_jobs(1, [_sample_job(100)])
-        cache.store_failures(100, [
-            _sample_failure(test_name="unit/auth -- test_acl"),
-            _sample_failure(test_name="unit/cluster -- test_repl"),
-        ])
+        cache.store_failures(
+            100,
+            [
+                _sample_failure(test_name="unit/auth -- test_acl"),
+                _sample_failure(test_name="unit/cluster -- test_repl"),
+            ],
+        )
         results = cache.query_failures(test_name_pattern="%auth%")
         assert len(results) == 1
         assert results[0]["test_name"] == "unit/auth -- test_acl"
@@ -216,11 +230,8 @@ class TestCacheFailures:
 # Property-based tests (hypothesis)
 # ---------------------------------------------------------------------------
 
-from hypothesis import given, settings, assume
 import hypothesis.strategies as st
-
-from valkey_oncall.cache import Cache
-
+from hypothesis import given, settings
 
 # -- Hypothesis strategies for generating valid cache records --
 
@@ -229,7 +240,11 @@ _statuses = st.sampled_from(["success", "failure", "cancelled"])
 _conclusions = st.sampled_from(["success", "failure", "cancelled", None])
 _iso_dates = st.dates().map(lambda d: d.isoformat() + "T00:00:00Z")
 _ids = st.integers(min_value=1, max_value=2**31)
-_text = st.text(min_size=1, max_size=50, alphabet=st.characters(whitelist_categories=("L", "N", "P", "Z")))
+_text = st.text(
+    min_size=1,
+    max_size=50,
+    alphabet=st.characters(whitelist_categories=("L", "N", "P", "Z")),
+)
 
 
 @st.composite
@@ -305,9 +320,15 @@ class TestCacheRoundTripProperty:
         assert got["status"] == job["status"]
         assert got["conclusion"] == job["conclusion"]
 
-    @given(run=workflow_run_strategy(), job=job_strategy(), log_content=st.text(min_size=0, max_size=500))
+    @given(
+        run=workflow_run_strategy(),
+        job=job_strategy(),
+        log_content=st.text(min_size=0, max_size=500),
+    )
     @settings(max_examples=100)
-    def test_log_round_trip(self, tmp_path_factory, run: dict, job: dict, log_content: str) -> None:
+    def test_log_round_trip(
+        self, tmp_path_factory, run: dict, job: dict, log_content: str
+    ) -> None:
         """Storing a log and retrieving it back preserves the content."""
         db_path = str(tmp_path_factory.mktemp("db") / "cache.db")
         cache = Cache(db_path)
@@ -319,7 +340,9 @@ class TestCacheRoundTripProperty:
 
     @given(run=workflow_run_strategy(), job=job_strategy(), failure=failure_strategy())
     @settings(max_examples=100)
-    def test_failure_round_trip(self, tmp_path_factory, run: dict, job: dict, failure: dict) -> None:
+    def test_failure_round_trip(
+        self, tmp_path_factory, run: dict, job: dict, failure: dict
+    ) -> None:
         """Storing a test failure and querying it back preserves all fields."""
         db_path = str(tmp_path_factory.mktemp("db") / "cache.db")
         cache = Cache(db_path)
@@ -342,7 +365,9 @@ class TestQueryFiltersProperty:
     # -- Strategies for filter values --
     _filter_workflow = st.one_of(st.none(), _workflow_files)
     _filter_status = st.one_of(st.none(), _statuses)
-    _filter_branch = st.one_of(st.none(), st.sampled_from(["main", "unstable", "release"]))
+    _filter_branch = st.one_of(
+        st.none(), st.sampled_from(["main", "unstable", "release"])
+    )
     _filter_date = st.one_of(st.none(), _iso_dates)
 
     @st.composite
@@ -352,16 +377,18 @@ class TestQueryFiltersProperty:
         branches = st.sampled_from(["main", "unstable", "release"])
         runs = draw(
             st.lists(
-                st.fixed_dictionaries({
-                    "run_id": _ids,
-                    "workflow_file": _workflow_files,
-                    "status": _statuses,
-                    "branch": branches,
-                    "commit_sha": _text,
-                    "run_date": _iso_dates,
-                    "duration_secs": st.integers(min_value=0, max_value=100_000),
-                    "raw_json": st.just("{}"),
-                }),
+                st.fixed_dictionaries(
+                    {
+                        "run_id": _ids,
+                        "workflow_file": _workflow_files,
+                        "status": _statuses,
+                        "branch": branches,
+                        "commit_sha": _text,
+                        "run_date": _iso_dates,
+                        "duration_secs": st.integers(min_value=0, max_value=100_000),
+                        "raw_json": st.just("{}"),
+                    }
+                ),
                 min_size=1,
                 max_size=15,
                 unique_by=lambda r: r["run_id"],
@@ -386,8 +413,11 @@ class TestQueryFiltersProperty:
         until = data.draw(self._filter_date)
 
         results = cache.query_runs(
-            workflow=workflow, status=status, branch=branch,
-            since=since, until=until,
+            workflow=workflow,
+            status=status,
+            branch=branch,
+            since=since,
+            until=until,
         )
 
         # Build the expected set by applying all predicates manually
@@ -444,13 +474,15 @@ class TestQueryFiltersProperty:
 
         jobs = data.draw(
             st.lists(
-                st.fixed_dictionaries({
-                    "job_id": _ids,
-                    "name": _text,
-                    "status": st.just("completed"),
-                    "conclusion": _conclusions,
-                    "raw_json": st.just("{}"),
-                }),
+                st.fixed_dictionaries(
+                    {
+                        "job_id": _ids,
+                        "name": _text,
+                        "status": st.just("completed"),
+                        "conclusion": _conclusions,
+                        "raw_json": st.just("{}"),
+                    }
+                ),
                 min_size=1,
                 max_size=10,
                 unique_by=lambda j: j["job_id"],
@@ -502,13 +534,18 @@ class TestQueryFiltersProperty:
             )
         )
         for jid in job_ids:
-            cache.store_jobs(run_id, [{
-                "job_id": jid,
-                "name": "job",
-                "status": "completed",
-                "conclusion": "failure",
-                "raw_json": "{}",
-            }])
+            cache.store_jobs(
+                run_id,
+                [
+                    {
+                        "job_id": jid,
+                        "name": "job",
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "raw_json": "{}",
+                    }
+                ],
+            )
 
         # Use a fixed set of test name prefixes so we can test LIKE patterns
         test_prefixes = ["unit/auth", "unit/cluster", "integration/repl"]
@@ -530,10 +567,12 @@ class TestQueryFiltersProperty:
 
         # Pick random filter values
         filter_job_id = data.draw(st.one_of(st.none(), st.sampled_from(job_ids)))
-        filter_pattern = data.draw(st.one_of(
-            st.none(),
-            st.sampled_from(["%auth%", "%cluster%", "%repl%"]),
-        ))
+        filter_pattern = data.draw(
+            st.one_of(
+                st.none(),
+                st.sampled_from(["%auth%", "%cluster%", "%repl%"]),
+            )
+        )
 
         results = cache.query_failures(
             job_id=filter_job_id,
@@ -545,6 +584,7 @@ class TestQueryFiltersProperty:
         def _like_matches(value: str, pattern: str) -> bool:
             """Simulate SQL LIKE: % matches any sequence, _ matches one char."""
             import re
+
             # Escape regex specials, then convert SQL LIKE wildcards
             regex = ""
             for ch in pattern:
@@ -561,7 +601,9 @@ class TestQueryFiltersProperty:
         if filter_job_id is not None:
             expected = [f for f in expected if f["job_id"] == filter_job_id]
         if filter_pattern is not None:
-            expected = [f for f in expected if _like_matches(f["test_name"], filter_pattern)]
+            expected = [
+                f for f in expected if _like_matches(f["test_name"], filter_pattern)
+            ]
 
         expected_keys = {(f["job_id"], f["test_name"]) for f in expected}
         result_keys = {(r["job_id"], r["test_name"]) for r in results}
@@ -587,7 +629,9 @@ class TestParserVersionInvalidation:
         c = Cache(db)
         c.store_runs([_sample_run(1)])
         c.store_jobs(1, [_sample_job(100)])
-        c.store_failures(100, [{"test_name": "old name", "error_summary": "x", "log_lines": "y"}])
+        c.store_failures(
+            100, [{"test_name": "old name", "error_summary": "x", "log_lines": "y"}]
+        )
         assert c.query_failures(job_id=100) != []
         c._conn.close()
 
@@ -610,7 +654,9 @@ class TestParserVersionInvalidation:
         c = Cache(db)
         c.store_runs([_sample_run(1)])
         c.store_jobs(1, [_sample_job(100)])
-        c.store_failures(100, [{"test_name": "kept", "error_summary": "x", "log_lines": "y"}])
+        c.store_failures(
+            100, [{"test_name": "kept", "error_summary": "x", "log_lines": "y"}]
+        )
         c._conn.close()
 
         c2 = Cache(db)

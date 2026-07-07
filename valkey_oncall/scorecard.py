@@ -1,9 +1,10 @@
 """Per-test flakiness scorecards computed from cached CI data."""
+
 from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from valkey_oncall.cache import Cache
 
@@ -113,19 +114,21 @@ def compute_scorecards(
         # Build daily series for trend (0 on days with no failure)
         daily_series = [date_counts.get(d, 0) for d in all_dates]
 
-        scorecards.append({
-            "test_name": test_name,
-            "category": _extract_category(test_name),
-            "first_seen": test_first_seen[test_name],
-            "last_seen": test_last_seen[test_name],
-            "days_failed": days_failed,
-            "total_hits": total_hits,
-            "total_runs": total_runs,
-            "failure_rate": failure_rate,
-            "classification": _classify(failure_rate),
-            "trend": _trend(daily_series),
-            "daily_series": daily_series,
-        })
+        scorecards.append(
+            {
+                "test_name": test_name,
+                "category": _extract_category(test_name),
+                "first_seen": test_first_seen[test_name],
+                "last_seen": test_last_seen[test_name],
+                "days_failed": days_failed,
+                "total_hits": total_hits,
+                "total_runs": total_runs,
+                "failure_rate": failure_rate,
+                "classification": _classify(failure_rate),
+                "trend": _trend(daily_series),
+                "daily_series": daily_series,
+            }
+        )
 
     # Sort by failure rate descending, then total hits
     scorecards.sort(key=lambda s: (-s["failure_rate"], -s["total_hits"]))

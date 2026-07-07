@@ -7,7 +7,6 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS workflow_runs (
     run_id        INTEGER PRIMARY KEY,
@@ -92,7 +91,9 @@ class Cache:
         self._check_parser_version()
         # Ensure repo index exists (for both new and migrated databases)
         try:
-            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_repo ON workflow_runs(repo)")
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_runs_repo ON workflow_runs(repo)"
+            )
             self._conn.commit()
         except sqlite3.OperationalError:
             pass
@@ -195,7 +196,11 @@ class Cache:
             params.append(until)
 
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-        sql = "SELECT run_id, repo, workflow_file, status, branch, commit_sha, run_date, duration_secs FROM workflow_runs" + where + " ORDER BY run_date DESC"
+        sql = (
+            "SELECT run_id, repo, workflow_file, status, branch, commit_sha, run_date, duration_secs FROM workflow_runs"
+            + where
+            + " ORDER BY run_date DESC"
+        )
         rows = self._conn.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
 

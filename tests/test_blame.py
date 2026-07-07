@@ -1,5 +1,5 @@
 """Tests for the blame module."""
-from datetime import datetime, timedelta, timezone
+
 from unittest.mock import MagicMock
 
 import pytest
@@ -18,8 +18,18 @@ def mock_client():
     client = MagicMock()
     client.repo = "valkey-io/valkey"
     client.compare_commits.return_value = [
-        {"sha": "aaa111", "message": "fix: something", "author": "dev1", "date": "2026-05-03T10:00:00Z"},
-        {"sha": "bbb222", "message": "feat: new thing", "author": "dev2", "date": "2026-05-03T11:00:00Z"},
+        {
+            "sha": "aaa111",
+            "message": "fix: something",
+            "author": "dev1",
+            "date": "2026-05-03T10:00:00Z",
+        },
+        {
+            "sha": "bbb222",
+            "message": "feat: new thing",
+            "author": "dev2",
+            "date": "2026-05-03T11:00:00Z",
+        },
     ]
     return client
 
@@ -63,11 +73,16 @@ class TestComputeBlame:
         # Day 3: failing with a new test failure
         cache.store_runs([_make_run(102, "2026-05-03", "failure", "ccc")])
         cache.store_jobs(102, [_make_job(202, 102)])
-        cache.store_failures(202, [{
-            "test_name": "flaky test in tests/unit/foo.tcl",
-            "error_summary": "assertion failed",
-            "log_lines": "x",
-        }])
+        cache.store_failures(
+            202,
+            [
+                {
+                    "test_name": "flaky test in tests/unit/foo.tcl",
+                    "error_summary": "assertion failed",
+                    "log_lines": "x",
+                }
+            ],
+        )
 
         result = compute_blame(cache, mock_client, days=30)
         assert len(result) == 1
@@ -85,11 +100,16 @@ class TestComputeBlame:
         """Test that tests failing from the start get a note."""
         cache.store_runs([_make_run(100, "2026-05-01", "failure", "aaa")])
         cache.store_jobs(100, [_make_job(200, 100)])
-        cache.store_failures(200, [{
-            "test_name": "old_flaky",
-            "error_summary": "err",
-            "log_lines": "x",
-        }])
+        cache.store_failures(
+            200,
+            [
+                {
+                    "test_name": "old_flaky",
+                    "error_summary": "err",
+                    "log_lines": "x",
+                }
+            ],
+        )
 
         result = compute_blame(cache, mock_client, days=30)
         assert len(result) == 1
@@ -106,19 +126,27 @@ class TestComputeBlame:
         # Day 2: test_A starts failing
         cache.store_runs([_make_run(101, "2026-05-02", "failure", "a2")])
         cache.store_jobs(101, [_make_job(201, 101)])
-        cache.store_failures(201, [{
-            "test_name": "test_A",
-            "error_summary": "err",
-            "log_lines": "x",
-        }])
+        cache.store_failures(
+            201,
+            [
+                {
+                    "test_name": "test_A",
+                    "error_summary": "err",
+                    "log_lines": "x",
+                }
+            ],
+        )
 
         # Day 3: test_B also starts failing
         cache.store_runs([_make_run(102, "2026-05-03", "failure", "a3")])
         cache.store_jobs(102, [_make_job(202, 102)])
-        cache.store_failures(202, [
-            {"test_name": "test_A", "error_summary": "err", "log_lines": "x"},
-            {"test_name": "test_B", "error_summary": "err", "log_lines": "x"},
-        ])
+        cache.store_failures(
+            202,
+            [
+                {"test_name": "test_A", "error_summary": "err", "log_lines": "x"},
+                {"test_name": "test_B", "error_summary": "err", "log_lines": "x"},
+            ],
+        )
 
         result = compute_blame(cache, mock_client, days=30)
         assert len(result) == 2
@@ -136,11 +164,16 @@ class TestComputeBlame:
         cache.store_jobs(100, [_make_job(200, 100, "success")])
         cache.store_runs([_make_run(101, "2026-05-02", "failure", "bbb")])
         cache.store_jobs(101, [_make_job(201, 101)])
-        cache.store_failures(201, [{
-            "test_name": "test_X",
-            "error_summary": "err",
-            "log_lines": "x",
-        }])
+        cache.store_failures(
+            201,
+            [
+                {
+                    "test_name": "test_X",
+                    "error_summary": "err",
+                    "log_lines": "x",
+                }
+            ],
+        )
 
         result = compute_blame(cache, mock_client, days=30)
         assert len(result) == 1

@@ -11,8 +11,7 @@ from __future__ import annotations
 
 import re
 
-from valkey_oncall.log_parser import TestFailure, parse_job_log
-
+from valkey_oncall.log_parser import parse_job_log
 
 # ---------------------------------------------------------------------------
 # 1. Tcl [err] with GitHub Actions timestamps
@@ -43,8 +42,11 @@ class TestTclErrWithGHATimestamp:
     def test_timestamp_stripping_does_not_lose_content(self) -> None:
         """The error detail after [err] should still be captured."""
         failures = parse_job_log(_TCL_ERR_GHA_TIMESTAMP)
-        assert any("Successful partial resynchronization" in f.error_summary
-                    or "log message" in f.error_summary for f in failures)
+        assert any(
+            "Successful partial resynchronization" in f.error_summary
+            or "log message" in f.error_summary
+            for f in failures
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -422,8 +424,7 @@ class TestTimeoutClientsStateNoise:
             _TIMEOUT_CLIENTS_STATE_UNRESOLVABLE, job_name="test-sanitizer-address"
         )
         assert all(
-            "clients state report follows" not in f.test_name.lower()
-            for f in failures
+            "clients state report follows" not in f.test_name.lower() for f in failures
         )
 
     def test_timeout_still_recorded_as_unattributed(self) -> None:
@@ -476,8 +477,8 @@ class TestExceptionVolatilePid:
         failures = parse_job_log(_EXCEPTION_VOLATILE_PID, job_name="test-macos")
         assert len(failures) == 1
         name = failures[0].test_name
-        assert "15868" not in name       # raw pid must be gone
-        assert "<pid>" in name           # normalized placeholder present
+        assert "15868" not in name  # raw pid must be gone
+        assert "<pid>" in name  # normalized placeholder present
 
     def test_different_pids_aggregate_to_same_name(self) -> None:
         a = parse_job_log(_EXCEPTION_VOLATILE_PID, job_name="test-macos")
@@ -501,9 +502,12 @@ class TestSanitizeCachedFailure:
     """Display-time cleanup of stale cached failure names."""
 
     def test_drops_legacy_process_error_row(self) -> None:
-        assert sanitize_cached_failure(
-            "Process error: Process completed with exit code 2."
-        ) is None
+        assert (
+            sanitize_cached_failure(
+                "Process error: Process completed with exit code 2."
+            )
+            is None
+        )
 
     def test_drops_bare_generic_exit_code(self) -> None:
         assert sanitize_cached_failure("Process completed with exit code 1.") is None
@@ -559,7 +563,9 @@ class TestServerCrashBucket:
     """Crash with no attributable test -> distinct per-job 'server crash' bucket."""
 
     def test_crash_becomes_server_crash_bucket(self) -> None:
-        fs = parse_job_log(_SERVER_CRASH_NO_TEST, job_name="test-sanitizer-address (clang)")
+        fs = parse_job_log(
+            _SERVER_CRASH_NO_TEST, job_name="test-sanitizer-address (clang)"
+        )
         assert len(fs) == 1
         assert fs[0].test_name == "test-sanitizer-address (clang): server crash"
         assert "unattributed" not in fs[0].test_name
@@ -572,7 +578,10 @@ class TestServerCrashBucket:
 
     def test_attributed_test_takes_precedence_over_crash(self) -> None:
         # A crash that DID produce an [err] stays attributed to the test.
-        log = _SERVER_CRASH_NO_TEST + "[err]: some real test in tests/unit/foo.tcl\nboom\n"
+        log = (
+            _SERVER_CRASH_NO_TEST
+            + "[err]: some real test in tests/unit/foo.tcl\nboom\n"
+        )
         fs = parse_job_log(log, job_name="test-x")
         names = {f.test_name for f in fs}
         assert "some real test in tests/unit/foo.tcl" in names
