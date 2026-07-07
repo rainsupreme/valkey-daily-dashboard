@@ -72,6 +72,15 @@ def compute_blame(
         if first_fail_idx is None:
             continue
 
+        # Post-onset failure rate: of the runs from the first failure onward,
+        # how many still failed. High => durable regression (blame reliable);
+        # low => likely a one-off flake, so the blamed commit range is not
+        # trustworthy.
+        post_runs = run_failures[first_fail_idx:]
+        post_fails = sum(1 for rf in post_runs if test_name in rf["failing_tests"])
+        post_onset_rate = round(post_fails / len(post_runs), 4)
+        confidence = "high" if post_onset_rate >= 0.5 else "low"
+
         # The "last green" is the run immediately before first_fail_idx
         if first_fail_idx == 0:
             # Test was already failing at the start of our window — no transition visible
@@ -82,6 +91,8 @@ def compute_blame(
                     "first_fail_sha": run_failures[0]["run"].get("commit_sha", ""),
                     "last_pass_sha": None,
                     "blame_commits": [],
+                    "post_onset_rate": post_onset_rate,
+                    "confidence": confidence,
                     "note": "Already failing at start of window — extend --days for full history",
                 }
             )
@@ -109,6 +120,8 @@ def compute_blame(
                 "last_pass_sha": base_sha,
                 "blame_commits": commits,
                 "commit_count": len(commits),
+                "post_onset_rate": post_onset_rate,
+                "confidence": confidence,
             }
         )
 
