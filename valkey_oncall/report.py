@@ -660,6 +660,10 @@ _HTML_TEMPLATE = """\
   .trend-flat {{ color:#8b949e; }}
   .cat-chip {{ background:#161b22; border:1px solid #30363d; color:#8b949e; padding:1px 6px; border-radius:4px; font-size:10px; }}
   .spark {{ vertical-align: middle; }}
+  #scorecard-controls {{ margin-bottom: 8px; font-size: 11px; color: #8b949e; }}
+  #scorecard-controls select, #scorecard-controls button {{ background:#161b22; color:#c9d1d9;
+    border:1px solid #30363d; border-radius:4px; font-size:11px; padding:2px 6px; margin:0 2px; cursor:pointer; }}
+  #scorecard-controls button:hover {{ background:#21262d; }}
 </style>
 </head>
 <body>
@@ -699,7 +703,18 @@ _HTML_TEMPLATE = """\
     Trend: <span class="trend-up">↑</span> worse / <span class="trend-down">↓</span> better / <span class="trend-flat">→</span> flat.
     "90d activity" sparkline shows per-day failure counts.
   </p>
-  <div id="scorecard-controls"></div>
+  <div id="scorecard-controls">
+    <label>Class:
+      <select id="sc-class"><option value="">all</option><option value="persistent">persistent</option><option value="flaky">flaky</option><option value="rare">rare</option></select>
+    </label>
+    <label style="margin-left:10px;">Category:
+      <select id="sc-cat"><option value="">all</option></select>
+    </label>
+    <span style="margin-left:10px;">Sort:</span>
+    <button data-sort="rate">rate</button>
+    <button data-sort="trend">trend</button>
+    <button data-sort="days">days</button>
+  </div>
   <table class="scorecard-table">
     <thead><tr><th>#</th><th>Test</th><th>Class</th><th>Trend</th><th>Category</th><th title="Failure rate over last 90 days">90d rate</th><th>Days</th><th>90d activity</th></tr></thead>
     <tbody id="scorecard-body">{scorecard_rows}</tbody>
@@ -719,6 +734,47 @@ _HTML_TEMPLATE = """\
   <summary>Raw JSON data</summary>
   <pre>{report_json}</pre>
 </details>
+<script>
+(function() {{
+  var body = document.getElementById('scorecard-body');
+  if (!body) return;
+  var rows = Array.prototype.slice.call(body.querySelectorAll('tr'));
+  var classSel = document.getElementById('sc-class');
+  var catSel = document.getElementById('sc-cat');
+
+  // Populate category filter from the rows present.
+  var cats = {{}};
+  rows.forEach(function(r) {{ cats[r.getAttribute('data-cat')] = true; }});
+  Object.keys(cats).sort().forEach(function(c) {{
+    var o = document.createElement('option');
+    o.value = c; o.textContent = c; catSel.appendChild(o);
+  }});
+
+  function applyFilter() {{
+    var cv = classSel.value, catv = catSel.value;
+    rows.forEach(function(r) {{
+      var ok = (!cv || r.getAttribute('data-class') === cv) &&
+               (!catv || r.getAttribute('data-cat') === catv);
+      r.style.display = ok ? '' : 'none';
+    }});
+  }}
+  classSel.addEventListener('change', applyFilter);
+  catSel.addEventListener('change', applyFilter);
+
+  var sortState = {{}};
+  function sortBy(key) {{
+    var desc = sortState[key] = !sortState[key];  // first click = descending
+    rows.slice().sort(function(a, b) {{
+      var av = parseFloat(a.getAttribute('data-' + key)) || 0;
+      var bv = parseFloat(b.getAttribute('data-' + key)) || 0;
+      return desc ? bv - av : av - bv;
+    }}).forEach(function(r) {{ body.appendChild(r); }});
+  }}
+  document.querySelectorAll('#scorecard-controls button[data-sort]').forEach(function(btn) {{
+    btn.addEventListener('click', function() {{ sortBy(btn.getAttribute('data-sort')); }});
+  }});
+}})();
+</script>
 </body>
 </html>
 """
