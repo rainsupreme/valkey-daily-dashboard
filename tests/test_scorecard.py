@@ -13,6 +13,10 @@ from valkey_oncall.scorecard import (
     compute_scorecards,
 )
 
+# Anchor test runs to a recent window so they fall inside compute_scorecards'
+# rolling `days` window regardless of the calendar date the suite runs on.
+_BASE = datetime.now(timezone.utc) - timedelta(days=15)
+
 # --- Unit tests for helpers ---
 
 
@@ -107,7 +111,7 @@ class TestComputeScorecards:
 
     def test_basic_scorecard(self, cache):
         # Create 5 runs over 5 days, test fails on 3 of them
-        base = datetime(2026, 5, 1, tzinfo=timezone.utc)
+        base = _BASE
         for i in range(5):
             date = (base + timedelta(days=i)).strftime("%Y-%m-%d")
             run = _make_run(100 + i, date, "failure" if i < 3 else "success")
@@ -144,7 +148,7 @@ class TestComputeScorecards:
         assert len(sc["daily_series"]) == 5
 
     def test_multiple_tests_sorted_by_rate(self, cache):
-        base = datetime(2026, 5, 1, tzinfo=timezone.utc)
+        base = _BASE
         for i in range(10):
             date = (base + timedelta(days=i)).strftime("%Y-%m-%d")
             cache.store_runs([_make_run(100 + i, date)])
@@ -182,7 +186,7 @@ class TestComputeScorecards:
         assert result["scorecards"][1]["failure_rate"] == 0.5
 
     def test_trend_positive_when_getting_worse(self, cache):
-        base = datetime(2026, 5, 1, tzinfo=timezone.utc)
+        base = _BASE
         for i in range(7):
             date = (base + timedelta(days=i)).strftime("%Y-%m-%d")
             cache.store_runs([_make_run(100 + i, date)])
@@ -205,7 +209,7 @@ class TestComputeScorecards:
         assert result["scorecards"][0]["trend"] > 0
 
     def test_first_last_seen(self, cache):
-        base = datetime(2026, 5, 1, tzinfo=timezone.utc)
+        base = _BASE
         for i in range(5):
             date = (base + timedelta(days=i)).strftime("%Y-%m-%d")
             cache.store_runs([_make_run(100 + i, date)])
@@ -225,12 +229,12 @@ class TestComputeScorecards:
 
         result = compute_scorecards(cache, days=30)
         sc = result["scorecards"][0]
-        assert sc["first_seen"] == "2026-05-02"
-        assert sc["last_seen"] == "2026-05-04"
+        assert sc["first_seen"] == (base + timedelta(days=1)).strftime("%Y-%m-%d")
+        assert sc["last_seen"] == (base + timedelta(days=3)).strftime("%Y-%m-%d")
 
     def test_json_serializable(self, cache):
         """Ensure the output is fully JSON-serializable."""
-        base = datetime(2026, 5, 1, tzinfo=timezone.utc)
+        base = _BASE
         for i in range(3):
             date = (base + timedelta(days=i)).strftime("%Y-%m-%d")
             cache.store_runs([_make_run(100 + i, date)])
