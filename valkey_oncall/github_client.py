@@ -6,7 +6,6 @@ from typing import Dict, List, Optional
 
 import httpx
 
-
 DEFAULT_REPO = "valkey-io/valkey"
 BASE_URL = "https://api.github.com"
 
@@ -23,7 +22,9 @@ class GitHubAPIError(Exception):
 class RateLimitError(GitHubAPIError):
     """Raised when GitHub returns 403 or 429 (rate limit exceeded)."""
 
-    def __init__(self, status_code: int, message: str, reset_at: Optional[str] = None) -> None:
+    def __init__(
+        self, status_code: int, message: str, reset_at: Optional[str] = None
+    ) -> None:
         self.reset_at = reset_at
         super().__init__(status_code, message)
 
@@ -161,7 +162,9 @@ class GitHubActionsClient:
         return [
             {
                 "sha": c["sha"],
-                "message": (c.get("commit", {}).get("message", "") or "").split("\n")[0],
+                "message": (c.get("commit", {}).get("message", "") or "").split("\n")[
+                    0
+                ],
                 "author": (c.get("commit", {}).get("author", {}) or {}).get("name", ""),
                 "date": (c.get("commit", {}).get("author", {}) or {}).get("date", ""),
             }
@@ -174,7 +177,7 @@ class GitHubActionsClient:
         self._raise_for_status(resp)
         data = resp.json()
         commit = data.get("commit", {})
-        message = (commit.get("message", "") or "")
+        message = commit.get("message", "") or ""
         return {
             "sha": data.get("sha", sha),
             "message_subject": message.split("\n")[0],

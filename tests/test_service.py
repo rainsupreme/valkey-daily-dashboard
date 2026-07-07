@@ -2,21 +2,20 @@
 
 from __future__ import annotations
 
-import json
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 from unittest.mock import MagicMock
 
-import pytest
-
 from valkey_oncall.cache import Cache
-from valkey_oncall.service import OnCallService, _map_run, _map_job
-
+from valkey_oncall.service import OnCallService, _map_job, _map_run
 
 # ---------------------------------------------------------------------------
 # Helpers — fake GitHub API responses
 # ---------------------------------------------------------------------------
 
-def _api_run(run_id: int, conclusion: str = "failure", branch: str = "unstable") -> Dict:
+
+def _api_run(
+    run_id: int, conclusion: str = "failure", branch: str = "unstable"
+) -> Dict:
     """Return a dict resembling a GitHub API workflow-run object."""
     return {
         "id": run_id,
@@ -42,7 +41,9 @@ def _api_job(job_id: int, conclusion: str = "failure") -> Dict:
     }
 
 
-def _make_service(temp_db_path: str, client: Optional[MagicMock] = None) -> OnCallService:
+def _make_service(
+    temp_db_path: str, client: Optional[MagicMock] = None
+) -> OnCallService:
     cache = Cache(temp_db_path)
     if client is None:
         client = MagicMock(repo="valkey-io/valkey")
@@ -52,6 +53,7 @@ def _make_service(temp_db_path: str, client: Optional[MagicMock] = None) -> OnCa
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestFetchRunsReturnsCachedAndNew:
     """fetch_runs should return all matching runs (cached + newly fetched)."""
@@ -165,8 +167,7 @@ class TestSyncOrchestration:
         ]
         # The failed job's log contains a recognisable failure pattern
         client.get_job_log.return_value = (
-            "[err]: some_test in tests/unit.tcl\n"
-            "Expected OK but got ERR\n"
+            "[err]: some_test in tests/unit.tcl\nExpected OK but got ERR\n"
         )
 
         svc = OnCallService(client, cache)
@@ -228,29 +229,30 @@ class TestSyncOrchestration:
 # Property-based tests (hypothesis)
 # ---------------------------------------------------------------------------
 
-import tempfile
 import os
+import tempfile
 
-from hypothesis import given, settings, assume
 import hypothesis.strategies as st
+from hypothesis import given, settings
 
 
 def _disjoint_id_sets():
     """Strategy that produces two disjoint sets of positive integer IDs:
     (cached_ids, new_ids).  Both sets are non-empty.
     """
-    return (
-        st.lists(st.integers(min_value=1, max_value=10_000), min_size=1, max_size=10, unique=True)
-        .flatmap(
-            lambda cached: st.tuples(
-                st.just(frozenset(cached)),
-                st.lists(
-                    st.integers(min_value=1, max_value=10_000).filter(lambda x: x not in cached),
-                    min_size=1,
-                    max_size=10,
-                    unique=True,
-                ).map(frozenset),
-            )
+    return st.lists(
+        st.integers(min_value=1, max_value=10_000), min_size=1, max_size=10, unique=True
+    ).flatmap(
+        lambda cached: st.tuples(
+            st.just(frozenset(cached)),
+            st.lists(
+                st.integers(min_value=1, max_value=10_000).filter(
+                    lambda x: x not in cached
+                ),
+                min_size=1,
+                max_size=10,
+                unique=True,
+            ).map(frozenset),
         )
     )
 
@@ -277,7 +279,9 @@ class TestIncrementalSyncNeverRefetchesCached:
 
         cache = Cache(db_path)
         # Pre-populate cache with the "cached" runs
-        cache.store_runs([_map_run(_api_run(rid), "valkey-io/valkey") for rid in cached_ids])
+        cache.store_runs(
+            [_map_run(_api_run(rid), "valkey-io/valkey") for rid in cached_ids]
+        )
 
         # API returns ALL runs (cached + new)
         all_api_runs = [_api_run(rid) for rid in sorted(cached_ids | new_ids)]
@@ -304,7 +308,12 @@ class TestIncrementalSyncNeverRefetchesCached:
         all_run_ids = sorted(cached_run_ids | new_run_ids)
 
         # Store all runs in cache (they need to exist for FK)
-        cache.store_runs([_map_run(_api_run(rid, conclusion="failure"), "valkey-io/valkey") for rid in all_run_ids])
+        cache.store_runs(
+            [
+                _map_run(_api_run(rid, conclusion="failure"), "valkey-io/valkey")
+                for rid in all_run_ids
+            ]
+        )
 
         # Pre-populate jobs for the "cached" runs
         for rid in cached_run_ids:
@@ -313,7 +322,9 @@ class TestIncrementalSyncNeverRefetchesCached:
 
         client = MagicMock(repo="valkey-io/valkey")
         # For new runs, return a job when asked
-        client.get_jobs_for_run.side_effect = lambda run_id: [_api_job(run_id * 1000 + 1)]
+        client.get_jobs_for_run.side_effect = lambda run_id: [
+            _api_job(run_id * 1000 + 1)
+        ]
 
         svc = OnCallService(client, cache)
 
@@ -322,7 +333,9 @@ class TestIncrementalSyncNeverRefetchesCached:
             svc.fetch_jobs(rid)
 
         # get_jobs_for_run should only have been called for new (non-cached) runs
-        called_run_ids = {call.args[0] for call in client.get_jobs_for_run.call_args_list}
+        called_run_ids = {
+            call.args[0] for call in client.get_jobs_for_run.call_args_list
+        }
         assert called_run_ids == set(new_run_ids)
         assert called_run_ids.isdisjoint(cached_run_ids)
 
@@ -392,9 +405,11 @@ class TestSyncRespectsWorkflowTypeFilter:
         # get_workflow_runs should be called exactly once, with the correct file
         client.get_workflow_runs.assert_called_once()
         call_kwargs = client.get_workflow_runs.call_args
-        assert call_kwargs.kwargs.get("workflow_file") == expected_file or \
-               (call_kwargs.args and call_kwargs.args[0] == expected_file) or \
-               call_kwargs[1].get("workflow_file") == expected_file
+        assert (
+            call_kwargs.kwargs.get("workflow_file") == expected_file
+            or (call_kwargs.args and call_kwargs.args[0] == expected_file)
+            or call_kwargs[1].get("workflow_file") == expected_file
+        )
 
         # All runs stored in cache should have the matching workflow_file
         stored = cache.query_runs()

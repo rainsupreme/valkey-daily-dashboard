@@ -5,7 +5,7 @@ Tests are based on real log patterns observed in valkey-io/valkey CI runs.
 
 from __future__ import annotations
 
-from valkey_oncall.log_parser import TestFailure, parse_job_log
+from valkey_oncall.log_parser import parse_job_log
 
 
 class TestParseJobLogEmpty:
@@ -38,7 +38,10 @@ class TestTclErrPattern:
         )
         failures = parse_job_log(log)
         assert len(failures) == 1
-        assert failures[0].test_name == "MULTI-BULK buffer overflow in tests/unit/protocol.tcl"
+        assert (
+            failures[0].test_name
+            == "MULTI-BULK buffer overflow in tests/unit/protocol.tcl"
+        )
         assert "Expected 'OK'" in failures[0].error_summary
         assert "[err]" in failures[0].log_lines
 
@@ -111,7 +114,10 @@ class TestTimeoutPattern:
         )
         failures = parse_job_log(log)
         assert len(failures) == 1
-        assert failures[0].test_name == "test io-threads are runtime modifiable in tests/unit/other.tcl"
+        assert (
+            failures[0].test_name
+            == "test io-threads are runtime modifiable in tests/unit/other.tcl"
+        )
         assert "TIMEOUT" in failures[0].error_summary
 
     def test_timeout_in_progress_fallback(self) -> None:
@@ -170,7 +176,9 @@ class TestTimeoutPattern:
         )
         failures = parse_job_log(log)
         assert len(failures) == 1
-        assert failures[0].test_name == "spawn timeout in tests/unit/cluster/failover.tcl"
+        assert (
+            failures[0].test_name == "spawn timeout in tests/unit/cluster/failover.tcl"
+        )
         assert "pid:" not in failures[0].test_name
 
 
@@ -247,24 +255,21 @@ class TestMixedLog:
 # Property-based tests (hypothesis)
 # ---------------------------------------------------------------------------
 
-from hypothesis import given, settings, assume
 import hypothesis.strategies as st
-
+from hypothesis import given, settings
 
 # -- Strategies for generating valid failure patterns --
 
 # Alphabet for test names: printable ASCII without newlines, and avoiding
 # the substring " in tests/" to prevent regex ambiguity in the Tcl pattern.
 _SAFE_ALPHA = st.sampled_from(
-    "abcdefghijklmnopqrstuvwxyz"
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "0123456789 _-.()"
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 _-.()"
 )
 
-_test_name_st = st.text(_SAFE_ALPHA, min_size=1, max_size=60).map(
-    lambda s: s.strip()
-).filter(
-    lambda s: len(s) >= 1 and " in tests/" not in s and "\n" not in s
+_test_name_st = (
+    st.text(_SAFE_ALPHA, min_size=1, max_size=60)
+    .map(lambda s: s.strip())
+    .filter(lambda s: len(s) >= 1 and " in tests/" not in s and "\n" not in s)
 )
 
 _tcl_path_segment = st.text(
@@ -282,25 +287,28 @@ _gtest_ident = st.text(
     max_size=30,
 ).filter(lambda s: s[0].isalpha())
 
-_gtest_name_st = st.tuples(_gtest_ident, _gtest_ident).map(
-    lambda t: f"{t[0]}.{t[1]}"
-)
+_gtest_name_st = st.tuples(_gtest_ident, _gtest_ident).map(lambda t: f"{t[0]}.{t[1]}")
 
 # Sentinel prefix (no colons or "FAILED" to avoid nested matches)
 _sentinel_prefix_st = st.text(
-    st.sampled_from("abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"),
+    st.sampled_from(
+        "abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+    ),
     min_size=1,
     max_size=40,
 ).filter(lambda s: s.strip() and "FAILED" not in s and ":" not in s and "\n" not in s)
 
 _sentinel_msg_st = st.text(
-    st.sampled_from("abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-."),
+    st.sampled_from(
+        "abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-."
+    ),
     min_size=1,
     max_size=40,
 ).filter(lambda s: s.strip() and "\n" not in s)
 
 
 # -- Log builders --
+
 
 def _build_tcl_log(test_name: str, tcl_path: str) -> str:
     return (
@@ -322,10 +330,7 @@ def _build_gtest_log(gtest_name: str) -> str:
 
 
 def _build_sentinel_log(prefix: str, message: str) -> str:
-    return (
-        f"{prefix}: FAILED: {message}\n"
-        "(Jumping to next unit after error)\n"
-    )
+    return f"{prefix}: FAILED: {message}\n(Jumping to next unit after error)\n"
 
 
 class TestPropertyParserExtractsTestNames:
@@ -344,9 +349,7 @@ class TestPropertyParserExtractsTestNames:
 
         assert len(failures) >= 1, "Parser should find at least one failure"
         for f in failures:
-            assert f.test_name in log, (
-                f"test_name {f.test_name!r} not found in log"
-            )
+            assert f.test_name in log, f"test_name {f.test_name!r} not found in log"
 
     @settings(max_examples=100)
     @given(gtest_name=_gtest_name_st)
@@ -358,9 +361,7 @@ class TestPropertyParserExtractsTestNames:
 
         assert len(failures) >= 1, "Parser should find at least one failure"
         for f in failures:
-            assert f.test_name in log, (
-                f"test_name {f.test_name!r} not found in log"
-            )
+            assert f.test_name in log, f"test_name {f.test_name!r} not found in log"
 
     @settings(max_examples=100)
     @given(prefix=_sentinel_prefix_st, message=_sentinel_msg_st)
@@ -372,6 +373,4 @@ class TestPropertyParserExtractsTestNames:
 
         assert len(failures) >= 1, "Parser should find at least one failure"
         for f in failures:
-            assert f.test_name in log, (
-                f"test_name {f.test_name!r} not found in log"
-            )
+            assert f.test_name in log, f"test_name {f.test_name!r} not found in log"

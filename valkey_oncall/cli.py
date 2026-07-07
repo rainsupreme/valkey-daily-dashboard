@@ -11,7 +11,11 @@ from typing import Optional
 import click
 
 from valkey_oncall.cache import Cache
-from valkey_oncall.github_client import GitHubActionsClient, GitHubAPIError, DEFAULT_REPO
+from valkey_oncall.github_client import (
+    DEFAULT_REPO,
+    GitHubActionsClient,
+    GitHubAPIError,
+)
 from valkey_oncall.service import OnCallService
 
 
@@ -65,7 +69,8 @@ def _require_token() -> str:
     help="GitHub repository (owner/name).",
 )
 @click.option(
-    "-v", "--verbose",
+    "-v",
+    "--verbose",
     is_flag=True,
     default=False,
     help="Print progress messages to stderr during operations.",
@@ -83,11 +88,19 @@ def cli(ctx: click.Context, db: str, repo: str, verbose: bool) -> None:
 # fetch-runs
 # ------------------------------------------------------------------
 
+
 @cli.command("fetch-runs")
 @click.option("--workflow", required=True, help="Workflow type (daily or weekly).")
 @click.option("--branch", default=None, help="Filter by branch name.")
-@click.option("--since", default=None, help="Fetch runs created after this date (ISO 8601).")
-@click.option("--until", "until_", default=None, help="Fetch runs created before this date (ISO 8601).")
+@click.option(
+    "--since", default=None, help="Fetch runs created after this date (ISO 8601)."
+)
+@click.option(
+    "--until",
+    "until_",
+    default=None,
+    help="Fetch runs created before this date (ISO 8601).",
+)
 @click.pass_context
 def fetch_runs(
     ctx: click.Context,
@@ -112,6 +125,7 @@ def fetch_runs(
 # fetch-jobs
 # ------------------------------------------------------------------
 
+
 @cli.command("fetch-jobs")
 @click.option("--run-id", required=True, type=int, help="Workflow run ID.")
 @click.pass_context
@@ -132,13 +146,24 @@ def fetch_jobs(ctx: click.Context, run_id: int) -> None:
 # fetch-log
 # ------------------------------------------------------------------
 
+
 @cli.command("fetch-log")
 @click.option("--job-id", required=True, type=int, help="Job ID.")
-@click.option("--grep", "pattern", default=None, help="Filter log lines by regex pattern.")
-@click.option("--context", "-C", "context_lines", default=0, type=int,
-              help="Number of surrounding lines to include with --grep matches.")
+@click.option(
+    "--grep", "pattern", default=None, help="Filter log lines by regex pattern."
+)
+@click.option(
+    "--context",
+    "-C",
+    "context_lines",
+    default=0,
+    type=int,
+    help="Number of surrounding lines to include with --grep matches.",
+)
 @click.pass_context
-def fetch_log(ctx: click.Context, job_id: int, pattern: Optional[str], context_lines: int) -> None:
+def fetch_log(
+    ctx: click.Context, job_id: int, pattern: Optional[str], context_lines: int
+) -> None:
     """Fetch the raw log for a job from GitHub Actions API."""
     try:
         _require_token()
@@ -159,6 +184,7 @@ def fetch_log(ctx: click.Context, job_id: int, pattern: Optional[str], context_l
 # ------------------------------------------------------------------
 # parse-log
 # ------------------------------------------------------------------
+
 
 @cli.command("parse-log")
 @click.option("--job-id", required=True, type=int, help="Job ID.")
@@ -182,9 +208,12 @@ def parse_log(ctx: click.Context, job_id: int) -> None:
 # failures
 # ------------------------------------------------------------------
 
+
 @cli.command("failures")
 @click.option("--run-id", required=True, type=int, help="Workflow run ID.")
-@click.option("--failed-only", is_flag=True, default=False, help="Show only failed jobs.")
+@click.option(
+    "--failed-only", is_flag=True, default=False, help="Show only failed jobs."
+)
 @click.pass_context
 def failures(ctx: click.Context, run_id: int, failed_only: bool) -> None:
     """One-shot summary of jobs for a run with first error per failed job."""
@@ -204,17 +233,29 @@ def failures(ctx: click.Context, run_id: int, failed_only: bool) -> None:
 # query subgroup
 # ------------------------------------------------------------------
 
+
 @cli.group()
 def query() -> None:
     """Query the local cache (no API calls)."""
 
 
 @query.command("runs")
-@click.option("--workflow", default=None, help="Filter by workflow type (daily or weekly).")
-@click.option("--status", default=None, help="Filter by status (success, failure, cancelled).")
+@click.option(
+    "--workflow", default=None, help="Filter by workflow type (daily or weekly)."
+)
+@click.option(
+    "--status", default=None, help="Filter by status (success, failure, cancelled)."
+)
 @click.option("--branch", default=None, help="Filter by branch name.")
-@click.option("--since", default=None, help="Filter runs on or after this date (ISO 8601).")
-@click.option("--until", "until_", default=None, help="Filter runs on or before this date (ISO 8601).")
+@click.option(
+    "--since", default=None, help="Filter runs on or after this date (ISO 8601)."
+)
+@click.option(
+    "--until",
+    "until_",
+    default=None,
+    help="Filter runs on or before this date (ISO 8601).",
+)
 @click.pass_context
 def query_runs(
     ctx: click.Context,
@@ -234,7 +275,9 @@ def query_runs(
 
 @query.command("jobs")
 @click.option("--run-id", required=True, type=int, help="Workflow run ID.")
-@click.option("--failed-only", is_flag=True, default=False, help="Show only failed jobs.")
+@click.option(
+    "--failed-only", is_flag=True, default=False, help="Show only failed jobs."
+)
 @click.pass_context
 def query_jobs(ctx: click.Context, run_id: int, failed_only: bool) -> None:
     """List cached jobs for a workflow run."""
@@ -245,9 +288,18 @@ def query_jobs(ctx: click.Context, run_id: int, failed_only: bool) -> None:
 
 @query.command("failures")
 @click.option("--job-id", default=None, type=int, help="Filter by job ID.")
-@click.option("--test-name", default=None, help="Filter by test name pattern (SQL LIKE).")
-@click.option("--since", default=None, help="Filter failures on or after this date (ISO 8601).")
-@click.option("--until", "until_", default=None, help="Filter failures on or before this date (ISO 8601).")
+@click.option(
+    "--test-name", default=None, help="Filter by test name pattern (SQL LIKE)."
+)
+@click.option(
+    "--since", default=None, help="Filter failures on or after this date (ISO 8601)."
+)
+@click.option(
+    "--until",
+    "until_",
+    default=None,
+    help="Filter failures on or before this date (ISO 8601).",
+)
 @click.pass_context
 def query_failures(
     ctx: click.Context,
@@ -268,11 +320,21 @@ def query_failures(
 # sync
 # ------------------------------------------------------------------
 
+
 @cli.command()
-@click.option("--workflow", default=None, help="Limit sync to a workflow type (daily or weekly).")
+@click.option(
+    "--workflow", default=None, help="Limit sync to a workflow type (daily or weekly)."
+)
 @click.option("--branch", default=None, help="Filter by branch name.")
-@click.option("--since", default=None, help="Sync runs created after this date (ISO 8601).")
-@click.option("--until", "until_", default=None, help="Sync runs created before this date (ISO 8601).")
+@click.option(
+    "--since", default=None, help="Sync runs created after this date (ISO 8601)."
+)
+@click.option(
+    "--until",
+    "until_",
+    default=None,
+    help="Sync runs created before this date (ISO 8601).",
+)
 @click.pass_context
 def sync(
     ctx: click.Context,
@@ -290,10 +352,15 @@ def sync(
 
         progress = None
         if ctx.obj.get("verbose"):
-            progress = lambda msg: click.echo(msg, err=True)
+
+            def progress(msg):
+                click.echo(msg, err=True)
 
         summary = svc.sync(
-            workflow=workflow, branch=branch, since=since, until=until_,
+            workflow=workflow,
+            branch=branch,
+            since=since,
+            until=until_,
             progress=progress,
         )
         click.echo(json.dumps(summary, indent=2))
@@ -306,12 +373,29 @@ def sync(
 # scorecard
 # ------------------------------------------------------------------
 
+
 @cli.command()
-@click.option("--days", default=30, show_default=True, help="Number of days of history for scorecard window.")
-@click.option("--branch", default="unstable", show_default=True, help="Branch to report on.")
-@click.option("--workflow", default="daily", show_default=True, help="Workflow type (daily or weekly).")
-@click.option("--output", "-o", default=None, help="Output file path (default: stdout).")
-@click.option("--no-sync", is_flag=True, default=False, help="Skip syncing latest data.")
+@click.option(
+    "--days",
+    default=30,
+    show_default=True,
+    help="Number of days of history for scorecard window.",
+)
+@click.option(
+    "--branch", default="unstable", show_default=True, help="Branch to report on."
+)
+@click.option(
+    "--workflow",
+    default="daily",
+    show_default=True,
+    help="Workflow type (daily or weekly).",
+)
+@click.option(
+    "--output", "-o", default=None, help="Output file path (default: stdout)."
+)
+@click.option(
+    "--no-sync", is_flag=True, default=False, help="Skip syncing latest data."
+)
 @click.pass_context
 def scorecard(
     ctx: click.Context,
@@ -326,7 +410,9 @@ def scorecard(
 
     cache = _make_cache(ctx.obj["db"])
     repo = ctx.obj["repo"]
-    workflow_file = {"daily": "daily.yml", "weekly": "weekly.yml"}.get(workflow, workflow)
+    workflow_file = {"daily": "daily.yml", "weekly": "weekly.yml"}.get(
+        workflow, workflow
+    )
 
     token = os.environ.get("GITHUB_TOKEN")
     if not no_sync and token:
@@ -337,7 +423,9 @@ def scorecard(
         svc = OnCallService(client, cache)
         svc.sync(workflow=workflow_file, branch=branch, progress=progress)
 
-    data = compute_scorecards(cache, days=days, branch=branch, workflow=workflow_file, repo=repo)
+    data = compute_scorecards(
+        cache, days=days, branch=branch, workflow=workflow_file, repo=repo
+    )
     content = json.dumps(data, indent=2)
 
     if output:
@@ -351,12 +439,29 @@ def scorecard(
 # blame
 # ------------------------------------------------------------------
 
+
 @cli.command()
-@click.option("--days", default=30, show_default=True, help="Number of days of history to search for regressions.")
-@click.option("--branch", default="unstable", show_default=True, help="Branch to analyze.")
-@click.option("--workflow", default="daily", show_default=True, help="Workflow type (daily or weekly).")
-@click.option("--output", "-o", default=None, help="Output file path (default: stdout).")
-@click.option("--no-sync", is_flag=True, default=False, help="Skip syncing latest data.")
+@click.option(
+    "--days",
+    default=30,
+    show_default=True,
+    help="Number of days of history to search for regressions.",
+)
+@click.option(
+    "--branch", default="unstable", show_default=True, help="Branch to analyze."
+)
+@click.option(
+    "--workflow",
+    default="daily",
+    show_default=True,
+    help="Workflow type (daily or weekly).",
+)
+@click.option(
+    "--output", "-o", default=None, help="Output file path (default: stdout)."
+)
+@click.option(
+    "--no-sync", is_flag=True, default=False, help="Skip syncing latest data."
+)
 @click.pass_context
 def blame(
     ctx: click.Context,
@@ -372,7 +477,9 @@ def blame(
     _require_token()
     cache = _make_cache(ctx.obj["db"])
     repo = ctx.obj["repo"]
-    workflow_file = {"daily": "daily.yml", "weekly": "weekly.yml"}.get(workflow, workflow)
+    workflow_file = {"daily": "daily.yml", "weekly": "weekly.yml"}.get(
+        workflow, workflow
+    )
 
     token = os.environ.get("GITHUB_TOKEN")
     client = GitHubActionsClient(token=token, repo=repo)
@@ -384,7 +491,9 @@ def blame(
         svc = OnCallService(client, cache)
         svc.sync(workflow=workflow_file, branch=branch, progress=progress)
 
-    records = compute_blame(cache, client, days=days, branch=branch, workflow=workflow_file, repo=repo)
+    records = compute_blame(
+        cache, client, days=days, branch=branch, workflow=workflow_file, repo=repo
+    )
     content = json.dumps(records, indent=2)
 
     if output:
@@ -398,18 +507,38 @@ def blame(
 # report
 # ------------------------------------------------------------------
 
+
 @cli.command()
-@click.option("--days", default=14, show_default=True, help="Number of days of history.")
-@click.option("--branch", default="unstable", show_default=True, help="Branch to report on.")
-@click.option("--workflow", default="daily", show_default=True, help="Workflow type (daily or weekly).")
 @click.option(
-    "--format", "-f", "fmt",
+    "--days", default=14, show_default=True, help="Number of days of history."
+)
+@click.option(
+    "--branch", default="unstable", show_default=True, help="Branch to report on."
+)
+@click.option(
+    "--workflow",
+    default="daily",
+    show_default=True,
+    help="Workflow type (daily or weekly).",
+)
+@click.option(
+    "--format",
+    "-f",
+    "fmt",
     type=click.Choice(["html", "markdown", "slack"], case_sensitive=False),
-    default="html", show_default=True,
+    default="html",
+    show_default=True,
     help="Output format.",
 )
-@click.option("--output", "-o", default=None, help="Output file path (default depends on format).")
-@click.option("--no-sync", is_flag=True, default=False, help="Skip syncing latest data before generating the report.")
+@click.option(
+    "--output", "-o", default=None, help="Output file path (default depends on format)."
+)
+@click.option(
+    "--no-sync",
+    is_flag=True,
+    default=False,
+    help="Skip syncing latest data before generating the report.",
+)
 @click.pass_context
 def report(
     ctx: click.Context,
@@ -422,12 +551,17 @@ def report(
 ) -> None:
     """Generate a failure trend report, syncing latest data first."""
     from valkey_oncall.report import (
-        generate_report_data, render_html, render_markdown, render_slack,
+        generate_report_data,
+        render_html,
+        render_markdown,
+        render_slack,
     )
 
     cache = _make_cache(ctx.obj["db"])
     repo = ctx.obj["repo"]
-    workflow_file = {"daily": "daily.yml", "weekly": "weekly.yml"}.get(workflow, workflow)
+    workflow_file = {"daily": "daily.yml", "weekly": "weekly.yml"}.get(
+        workflow, workflow
+    )
 
     token = os.environ.get("GITHUB_TOKEN")
     client = GitHubActionsClient(token=token, repo=repo) if token else None
@@ -443,10 +577,14 @@ def report(
         else:
             verbose = ctx.obj.get("verbose")
             progress = (lambda msg: click.echo(msg, err=True)) if verbose else None
-            click.echo(f"Syncing latest data for {repo} {workflow} / {branch}...", err=True)
+            click.echo(
+                f"Syncing latest data for {repo} {workflow} / {branch}...", err=True
+            )
             svc = OnCallService(client, cache)
             sync_summary = svc.sync(
-                workflow=workflow_file, branch=branch, progress=progress,
+                workflow=workflow_file,
+                branch=branch,
+                progress=progress,
             )
             click.echo(
                 f"Sync: {sync_summary['new_runs_fetched']} new runs, "
@@ -457,10 +595,24 @@ def report(
                 for err in sync_summary["errors"]:
                     click.echo(f"  sync error: {err}", err=True)
 
-    click.echo(f"Generating report for {repo} {workflow} / {branch} (last {days} days)...", err=True)
-    data = generate_report_data(cache, days=days, branch=branch, workflow=workflow_file, repo=repo, client=client)
+    click.echo(
+        f"Generating report for {repo} {workflow} / {branch} (last {days} days)...",
+        err=True,
+    )
+    data = generate_report_data(
+        cache,
+        days=days,
+        branch=branch,
+        workflow=workflow_file,
+        repo=repo,
+        client=client,
+    )
 
-    renderers = {"html": render_html, "markdown": render_markdown, "slack": render_slack}
+    renderers = {
+        "html": render_html,
+        "markdown": render_markdown,
+        "slack": render_slack,
+    }
     content = renderers[fmt](data)
 
     default_ext = {"html": ".html", "markdown": ".md", "slack": ".txt"}

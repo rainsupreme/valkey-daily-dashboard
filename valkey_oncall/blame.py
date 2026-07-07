@@ -1,9 +1,9 @@
 """Blame narrowing: identify commits likely responsible for test regressions."""
+
 from __future__ import annotations
 
-from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from valkey_oncall.cache import Cache
 from valkey_oncall.github_client import GitHubActionsClient
@@ -75,14 +75,16 @@ def compute_blame(
         # The "last green" is the run immediately before first_fail_idx
         if first_fail_idx == 0:
             # Test was already failing at the start of our window — no transition visible
-            blame_records.append({
-                "test_name": test_name,
-                "regression_date": run_failures[0]["run"]["run_date"][:10],
-                "first_fail_sha": run_failures[0]["run"].get("commit_sha", ""),
-                "last_pass_sha": None,
-                "blame_commits": [],
-                "note": "Already failing at start of window — extend --days for full history",
-            })
+            blame_records.append(
+                {
+                    "test_name": test_name,
+                    "regression_date": run_failures[0]["run"]["run_date"][:10],
+                    "first_fail_sha": run_failures[0]["run"].get("commit_sha", ""),
+                    "last_pass_sha": None,
+                    "blame_commits": [],
+                    "note": "Already failing at start of window — extend --days for full history",
+                }
+            )
             continue
 
         last_pass = run_failures[first_fail_idx - 1]["run"]
@@ -98,15 +100,17 @@ def compute_blame(
             except Exception:
                 pass
 
-        blame_records.append({
-            "test_name": test_name,
-            "regression_date": first_fail["run_date"][:10],
-            "last_pass_date": last_pass["run_date"][:10],
-            "first_fail_sha": head_sha,
-            "last_pass_sha": base_sha,
-            "blame_commits": commits,
-            "commit_count": len(commits),
-        })
+        blame_records.append(
+            {
+                "test_name": test_name,
+                "regression_date": first_fail["run_date"][:10],
+                "last_pass_date": last_pass["run_date"][:10],
+                "first_fail_sha": head_sha,
+                "last_pass_sha": base_sha,
+                "blame_commits": commits,
+                "commit_count": len(commits),
+            }
+        )
 
     # Sort by regression date descending (newest regressions first)
     blame_records.sort(key=lambda r: r.get("regression_date", ""), reverse=True)

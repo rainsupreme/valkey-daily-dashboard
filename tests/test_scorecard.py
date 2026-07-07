@@ -1,14 +1,20 @@
 """Tests for the scorecard module."""
+
 import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from valkey_oncall.cache import Cache
-from valkey_oncall.scorecard import compute_scorecards, _classify, _trend, _extract_category
-
+from valkey_oncall.scorecard import (
+    _classify,
+    _extract_category,
+    _trend,
+    compute_scorecards,
+)
 
 # --- Unit tests for helpers ---
+
 
 class TestClassify:
     def test_persistent(self):
@@ -66,6 +72,7 @@ class TestExtractCategory:
 
 # --- Integration tests with real Cache ---
 
+
 @pytest.fixture
 def cache(tmp_path):
     return Cache(str(tmp_path / "test.db"))
@@ -108,11 +115,16 @@ class TestComputeScorecards:
             if i < 3:
                 job = _make_job(200 + i, 100 + i)
                 cache.store_jobs(100 + i, [job])
-                cache.store_failures(200 + i, [{
-                    "test_name": "flaky test in tests/unit/foo.tcl",
-                    "error_summary": "assertion failed",
-                    "log_lines": "line1\nline2",
-                }])
+                cache.store_failures(
+                    200 + i,
+                    [
+                        {
+                            "test_name": "flaky test in tests/unit/foo.tcl",
+                            "error_summary": "assertion failed",
+                            "log_lines": "line1\nline2",
+                        }
+                    ],
+                )
             else:
                 # Passing run still needs jobs stored for completeness
                 cache.store_jobs(100 + i, [_make_job(200 + i, 100 + i, "success")])
@@ -140,24 +152,31 @@ class TestComputeScorecards:
 
             failures = []
             # "always_fails" fails every day
-            failures.append({
-                "test_name": "always_fails in tests/cluster/x.tcl",
-                "error_summary": "err",
-                "log_lines": "x",
-            })
-            # "sometimes_fails" fails on even days only
-            if i % 2 == 0:
-                failures.append({
-                    "test_name": "sometimes_fails in tests/unit/y.tcl",
+            failures.append(
+                {
+                    "test_name": "always_fails in tests/cluster/x.tcl",
                     "error_summary": "err",
                     "log_lines": "x",
-                })
+                }
+            )
+            # "sometimes_fails" fails on even days only
+            if i % 2 == 0:
+                failures.append(
+                    {
+                        "test_name": "sometimes_fails in tests/unit/y.tcl",
+                        "error_summary": "err",
+                        "log_lines": "x",
+                    }
+                )
             cache.store_failures(200 + i, failures)
 
         result = compute_scorecards(cache, days=30)
         assert len(result["scorecards"]) == 2
         # First should be the one with higher failure rate
-        assert result["scorecards"][0]["test_name"] == "always_fails in tests/cluster/x.tcl"
+        assert (
+            result["scorecards"][0]["test_name"]
+            == "always_fails in tests/cluster/x.tcl"
+        )
         assert result["scorecards"][0]["failure_rate"] == 1.0
         assert result["scorecards"][0]["classification"] == "persistent"
         assert result["scorecards"][1]["failure_rate"] == 0.5
@@ -170,11 +189,16 @@ class TestComputeScorecards:
             cache.store_jobs(100 + i, [_make_job(200 + i, 100 + i)])
             # Only fails on later days (getting worse)
             if i >= 4:
-                cache.store_failures(200 + i, [{
-                    "test_name": "worsening in tests/unit/z.tcl",
-                    "error_summary": "err",
-                    "log_lines": "x",
-                }])
+                cache.store_failures(
+                    200 + i,
+                    [
+                        {
+                            "test_name": "worsening in tests/unit/z.tcl",
+                            "error_summary": "err",
+                            "log_lines": "x",
+                        }
+                    ],
+                )
 
         result = compute_scorecards(cache, days=30)
         assert len(result["scorecards"]) == 1
@@ -188,11 +212,16 @@ class TestComputeScorecards:
             cache.store_jobs(100 + i, [_make_job(200 + i, 100 + i)])
             # Fails only on days 1 and 3
             if i in (1, 3):
-                cache.store_failures(200 + i, [{
-                    "test_name": "sporadic",
-                    "error_summary": "err",
-                    "log_lines": "x",
-                }])
+                cache.store_failures(
+                    200 + i,
+                    [
+                        {
+                            "test_name": "sporadic",
+                            "error_summary": "err",
+                            "log_lines": "x",
+                        }
+                    ],
+                )
 
         result = compute_scorecards(cache, days=30)
         sc = result["scorecards"][0]
@@ -206,11 +235,16 @@ class TestComputeScorecards:
             date = (base + timedelta(days=i)).strftime("%Y-%m-%d")
             cache.store_runs([_make_run(100 + i, date)])
             cache.store_jobs(100 + i, [_make_job(200 + i, 100 + i)])
-            cache.store_failures(200 + i, [{
-                "test_name": "test",
-                "error_summary": "err",
-                "log_lines": "x",
-            }])
+            cache.store_failures(
+                200 + i,
+                [
+                    {
+                        "test_name": "test",
+                        "error_summary": "err",
+                        "log_lines": "x",
+                    }
+                ],
+            )
 
         result = compute_scorecards(cache, days=30)
         # Should not raise

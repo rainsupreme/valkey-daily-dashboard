@@ -8,21 +8,21 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from typing import Dict, List
+from typing import Dict
 from unittest.mock import MagicMock, patch
 
+import hypothesis.strategies as st
 from click.testing import CliRunner
 from hypothesis import given, settings
-import hypothesis.strategies as st
 
 from valkey_oncall.cache import Cache
 from valkey_oncall.cli import cli
-from valkey_oncall.service import _map_run, _map_job
-
+from valkey_oncall.service import _map_job, _map_run
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _fresh_db() -> str:
     """Create a fresh temporary SQLite DB path."""
@@ -31,8 +31,12 @@ def _fresh_db() -> str:
     return path
 
 
-def _api_run(run_id: int, conclusion: str = "failure", branch: str = "unstable",
-             workflow_path: str = ".github/workflows/daily.yml") -> Dict:
+def _api_run(
+    run_id: int,
+    conclusion: str = "failure",
+    branch: str = "unstable",
+    workflow_path: str = ".github/workflows/daily.yml",
+) -> Dict:
     """Return a dict resembling a GitHub API workflow-run object."""
     return {
         "id": run_id,
@@ -58,8 +62,9 @@ def _api_job(job_id: int, conclusion: str = "failure") -> Dict:
     }
 
 
-def _populate_cache(db_path: str, num_runs: int, num_jobs_per_run: int,
-                    add_failures: bool = False) -> None:
+def _populate_cache(
+    db_path: str, num_runs: int, num_jobs_per_run: int, add_failures: bool = False
+) -> None:
     """Populate a cache DB with sample data for query commands."""
     cache = Cache(db_path)
     for i in range(1, num_runs + 1):
@@ -74,15 +79,20 @@ def _populate_cache(db_path: str, num_runs: int, num_jobs_per_run: int,
             if add_failures:
                 for job in jobs:
                     jid = job["job_id"]
-                    log_text = f"[err]: test_example_{jid} in tests/unit.tcl\nExpected OK\n"
+                    log_text = (
+                        f"[err]: test_example_{jid} in tests/unit.tcl\nExpected OK\n"
+                    )
                     cache.store_log(jid, log_text)
-                    cache.store_failures(jid, [
-                        {
-                            "test_name": f"test_example_{jid} in tests/unit.tcl",
-                            "error_summary": "Expected OK",
-                            "log_lines": log_text,
-                        }
-                    ])
+                    cache.store_failures(
+                        jid,
+                        [
+                            {
+                                "test_name": f"test_example_{jid} in tests/unit.tcl",
+                                "error_summary": "Expected OK",
+                                "log_lines": log_text,
+                            }
+                        ],
+                    )
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +107,7 @@ st_num_jobs = st.integers(min_value=1, max_value=3)
 # ---------------------------------------------------------------------------
 # Property 3: All command output is valid JSON
 # ---------------------------------------------------------------------------
+
 
 class TestAllCommandOutputIsValidJSON:
     """Property 3: All command output is valid JSON.
@@ -122,8 +133,7 @@ class TestAllCommandOutputIsValidJSON:
         parsed = json.loads(result.output)
         assert isinstance(parsed, list)
 
-    @given(num_runs=st.integers(min_value=1, max_value=5),
-           num_jobs=st_num_jobs)
+    @given(num_runs=st.integers(min_value=1, max_value=5), num_jobs=st_num_jobs)
     @settings(max_examples=100)
     def test_query_jobs_outputs_valid_json(self, num_runs: int, num_jobs: int) -> None:
         """query jobs always outputs valid JSON."""
@@ -143,8 +153,9 @@ class TestAllCommandOutputIsValidJSON:
     def test_query_failures_outputs_valid_json(self, num_runs: int) -> None:
         """query failures always outputs valid JSON."""
         db_path = _fresh_db()
-        _populate_cache(db_path, num_runs=num_runs, num_jobs_per_run=1,
-                        add_failures=True)
+        _populate_cache(
+            db_path, num_runs=num_runs, num_jobs_per_run=1, add_failures=True
+        )
 
         runner = CliRunner()
         result = runner.invoke(cli, ["--db", db_path, "query", "failures"])
@@ -173,7 +184,9 @@ class TestAllCommandOutputIsValidJSON:
 
         runner = CliRunner(env={"GITHUB_TOKEN": "fake-token"})
         with patch("valkey_oncall.cli._make_client", return_value=mock_client):
-            result = runner.invoke(cli, ["--db", db_path, "sync", "--workflow", "daily"])
+            result = runner.invoke(
+                cli, ["--db", db_path, "sync", "--workflow", "daily"]
+            )
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
         parsed = json.loads(result.output)
@@ -192,7 +205,9 @@ class TestAllCommandOutputIsValidJSON:
 
         runner = CliRunner(env={"GITHUB_TOKEN": "fake-token"})
         with patch("valkey_oncall.cli._make_client", return_value=mock_client):
-            result = runner.invoke(cli, ["--db", db_path, "fetch-runs", "--workflow", "daily"])
+            result = runner.invoke(
+                cli, ["--db", db_path, "fetch-runs", "--workflow", "daily"]
+            )
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
         parsed = json.loads(result.output)
@@ -214,7 +229,9 @@ class TestAllCommandOutputIsValidJSON:
 
         runner = CliRunner(env={"GITHUB_TOKEN": "fake-token"})
         with patch("valkey_oncall.cli._make_client", return_value=mock_client):
-            result = runner.invoke(cli, ["--db", db_path, "fetch-jobs", "--run-id", "1"])
+            result = runner.invoke(
+                cli, ["--db", db_path, "fetch-jobs", "--run-id", "1"]
+            )
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
         parsed = json.loads(result.output)
@@ -235,7 +252,9 @@ class TestAllCommandOutputIsValidJSON:
         has_failure = data.draw(st.booleans())
         if has_failure:
             test_name = data.draw(st.from_regex(r"[a-z_]{3,20}", fullmatch=True))
-            log_text = f"[err]: {test_name} in tests/unit.tcl\nExpected OK but got ERR\n"
+            log_text = (
+                f"[err]: {test_name} in tests/unit.tcl\nExpected OK but got ERR\n"
+            )
         else:
             log_text = data.draw(st.text(min_size=0, max_size=200))
 
@@ -244,7 +263,9 @@ class TestAllCommandOutputIsValidJSON:
         mock_client = MagicMock(repo="valkey-io/valkey")
         runner = CliRunner(env={"GITHUB_TOKEN": "fake-token"})
         with patch("valkey_oncall.cli._make_client", return_value=mock_client):
-            result = runner.invoke(cli, ["--db", db_path, "parse-log", "--job-id", "100"])
+            result = runner.invoke(
+                cli, ["--db", db_path, "parse-log", "--job-id", "100"]
+            )
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
         # Click 8.3+ mixes stderr into output; try full parse, fall back to
@@ -262,6 +283,7 @@ class TestAllCommandOutputIsValidJSON:
 # Property 5: Query commands make no API calls
 # ---------------------------------------------------------------------------
 
+
 class TestQueryCommandsMakeNoAPICalls:
     """Property 5: Query commands make no API calls.
 
@@ -275,7 +297,9 @@ class TestQueryCommandsMakeNoAPICalls:
     @given(
         num_runs=st.integers(min_value=0, max_value=5),
         workflow=st.one_of(st.none(), st.sampled_from(["daily.yml", "weekly.yml"])),
-        status=st.one_of(st.none(), st.sampled_from(["success", "failure", "cancelled"])),
+        status=st.one_of(
+            st.none(), st.sampled_from(["success", "failure", "cancelled"])
+        ),
         branch=st.one_of(st.none(), st.sampled_from(["unstable", "main"])),
     )
     @settings(max_examples=100)
@@ -336,8 +360,9 @@ class TestQueryCommandsMakeNoAPICalls:
     ) -> None:
         """query failures never invokes _make_client, regardless of filter params."""
         db_path = _fresh_db()
-        _populate_cache(db_path, num_runs=num_runs, num_jobs_per_run=1,
-                        add_failures=True)
+        _populate_cache(
+            db_path, num_runs=num_runs, num_jobs_per_run=1, add_failures=True
+        )
 
         runner = CliRunner()
         args = ["--db", db_path, "query", "failures"]
@@ -358,11 +383,11 @@ class TestQueryCommandsMakeNoAPICalls:
 # ---------------------------------------------------------------------------
 from valkey_oncall.github_client import GitHubAPIError
 
-
 # ---------------------------------------------------------------------------
 # Task 7.4: CLI Integration Tests
 # Requirements: 1.5, 1.6, 2.4, 2.5, 6.3
 # ---------------------------------------------------------------------------
+
 
 class TestCLIIntegration:
     """Integration tests for CLI commands covering success/error exit codes,
@@ -376,7 +401,9 @@ class TestCLIIntegration:
 
         runner = CliRunner(env={"GITHUB_TOKEN": "fake-token"})
         with patch("valkey_oncall.cli._make_client", return_value=mock_client):
-            result = runner.invoke(cli, ["--db", db_path, "fetch-runs", "--workflow", "daily"])
+            result = runner.invoke(
+                cli, ["--db", db_path, "fetch-runs", "--workflow", "daily"]
+            )
 
         assert result.exit_code == 0
         parsed = json.loads(result.output)
@@ -386,11 +413,15 @@ class TestCLIIntegration:
     def test_fetch_runs_api_error(self) -> None:
         db_path = _fresh_db()
         mock_client = MagicMock(repo="valkey-io/valkey")
-        mock_client.get_workflow_runs.side_effect = GitHubAPIError(500, "Internal Server Error")
+        mock_client.get_workflow_runs.side_effect = GitHubAPIError(
+            500, "Internal Server Error"
+        )
 
         runner = CliRunner(env={"GITHUB_TOKEN": "fake-token"})
         with patch("valkey_oncall.cli._make_client", return_value=mock_client):
-            result = runner.invoke(cli, ["--db", db_path, "fetch-runs", "--workflow", "daily"])
+            result = runner.invoke(
+                cli, ["--db", db_path, "fetch-runs", "--workflow", "daily"]
+            )
 
         assert result.exit_code == 1
         assert "Error" in result.stderr
@@ -407,7 +438,9 @@ class TestCLIIntegration:
 
         runner = CliRunner(env={"GITHUB_TOKEN": "fake-token"})
         with patch("valkey_oncall.cli._make_client", return_value=mock_client):
-            result = runner.invoke(cli, ["--db", db_path, "fetch-jobs", "--run-id", "1"])
+            result = runner.invoke(
+                cli, ["--db", db_path, "fetch-jobs", "--run-id", "1"]
+            )
 
         assert result.exit_code == 0
         parsed = json.loads(result.output)
@@ -421,7 +454,9 @@ class TestCLIIntegration:
 
         runner = CliRunner(env={"GITHUB_TOKEN": "fake-token"})
         with patch("valkey_oncall.cli._make_client", return_value=mock_client):
-            result = runner.invoke(cli, ["--db", db_path, "fetch-jobs", "--run-id", "99999"])
+            result = runner.invoke(
+                cli, ["--db", db_path, "fetch-jobs", "--run-id", "99999"]
+            )
 
         assert result.exit_code == 1
         assert "Error" in result.stderr
@@ -438,7 +473,9 @@ class TestCLIIntegration:
 
         runner = CliRunner(env={"GITHUB_TOKEN": "fake-token"})
         with patch("valkey_oncall.cli._make_client", return_value=mock_client):
-            result = runner.invoke(cli, ["--db", db_path, "fetch-log", "--job-id", "1001"])
+            result = runner.invoke(
+                cli, ["--db", db_path, "fetch-log", "--job-id", "1001"]
+            )
 
         assert result.exit_code == 0
         assert "raw log line 1" in result.output
@@ -449,12 +486,16 @@ class TestCLIIntegration:
         cache = Cache(db_path)
         cache.store_runs([_map_run(_api_run(1), "valkey-io/valkey")])
         cache.store_jobs(1, [_map_job(_api_job(1001))])
-        cache.store_log(1001, "[err]: test_acl_setuser in tests/unit.tcl\nExpected OK but got ERR\n")
+        cache.store_log(
+            1001, "[err]: test_acl_setuser in tests/unit.tcl\nExpected OK but got ERR\n"
+        )
 
         mock_client = MagicMock(repo="valkey-io/valkey")
         runner = CliRunner(env={"GITHUB_TOKEN": "fake-token"})
         with patch("valkey_oncall.cli._make_client", return_value=mock_client):
-            result = runner.invoke(cli, ["--db", db_path, "parse-log", "--job-id", "1001"])
+            result = runner.invoke(
+                cli, ["--db", db_path, "parse-log", "--job-id", "1001"]
+            )
 
         assert result.exit_code == 0
         parsed = json.loads(result.output)
@@ -471,9 +512,19 @@ class TestCLIIntegration:
         assert result.exit_code == 0
         parsed = json.loads(result.output)
         assert isinstance(parsed, list)
-        expected_keys = {"run_id", "workflow_file", "status", "branch", "commit_sha", "run_date", "duration_secs"}
+        expected_keys = {
+            "run_id",
+            "workflow_file",
+            "status",
+            "branch",
+            "commit_sha",
+            "run_date",
+            "duration_secs",
+        }
         for item in parsed:
-            assert expected_keys.issubset(item.keys()), f"Missing keys: {expected_keys - item.keys()}"
+            assert expected_keys.issubset(item.keys()), (
+                f"Missing keys: {expected_keys - item.keys()}"
+            )
 
     # 8. query jobs JSON structure
     def test_query_jobs_json_structure(self) -> None:
@@ -488,7 +539,9 @@ class TestCLIIntegration:
         assert isinstance(parsed, list)
         expected_keys = {"job_id", "run_id", "name", "status", "conclusion"}
         for item in parsed:
-            assert expected_keys.issubset(item.keys()), f"Missing keys: {expected_keys - item.keys()}"
+            assert expected_keys.issubset(item.keys()), (
+                f"Missing keys: {expected_keys - item.keys()}"
+            )
 
     # 9. query failures JSON structure
     def test_query_failures_json_structure(self) -> None:
@@ -504,25 +557,39 @@ class TestCLIIntegration:
         assert len(parsed) > 0, "Expected at least one failure"
         expected_keys = {"job_id", "test_name", "error_summary", "log_lines"}
         for item in parsed:
-            assert expected_keys.issubset(item.keys()), f"Missing keys: {expected_keys - item.keys()}"
+            assert expected_keys.issubset(item.keys()), (
+                f"Missing keys: {expected_keys - item.keys()}"
+            )
 
     # 10. sync JSON structure
     def test_sync_json_structure(self) -> None:
         db_path = _fresh_db()
         mock_client = MagicMock(repo="valkey-io/valkey")
         mock_client.get_workflow_runs.return_value = [_api_run(1, conclusion="failure")]
-        mock_client.get_jobs_for_run.return_value = [_api_job(1001, conclusion="failure")]
+        mock_client.get_jobs_for_run.return_value = [
+            _api_job(1001, conclusion="failure")
+        ]
         mock_client.get_job_log.return_value = "some log\n"
 
         runner = CliRunner(env={"GITHUB_TOKEN": "fake-token"})
         with patch("valkey_oncall.cli._make_client", return_value=mock_client):
-            result = runner.invoke(cli, ["--db", db_path, "sync", "--workflow", "daily"])
+            result = runner.invoke(
+                cli, ["--db", db_path, "sync", "--workflow", "daily"]
+            )
 
         assert result.exit_code == 0
         parsed = json.loads(result.output)
         assert isinstance(parsed, dict)
-        expected_keys = {"new_runs_fetched", "new_jobs_fetched", "new_logs_fetched", "new_failures_parsed", "errors"}
-        assert expected_keys.issubset(parsed.keys()), f"Missing keys: {expected_keys - parsed.keys()}"
+        expected_keys = {
+            "new_runs_fetched",
+            "new_jobs_fetched",
+            "new_logs_fetched",
+            "new_failures_parsed",
+            "errors",
+        }
+        assert expected_keys.issubset(parsed.keys()), (
+            f"Missing keys: {expected_keys - parsed.keys()}"
+        )
 
     # 11. --db option overrides default path
     def test_db_option_overrides_default(self, tmp_path) -> None:
@@ -533,7 +600,10 @@ class TestCLIIntegration:
 
         assert result.exit_code == 0
         from pathlib import Path
-        assert Path(custom_db).exists(), "Custom DB file was not created at the specified path"
+
+        assert Path(custom_db).exists(), (
+            "Custom DB file was not created at the specified path"
+        )
 
     # 12. stderr warning when GITHUB_TOKEN is absent (fetch-runs still works)
     def test_stderr_warning_when_no_github_token(self) -> None:
@@ -545,7 +615,9 @@ class TestCLIIntegration:
         # Let _make_client run so the warning is emitted, but patch the
         # GitHubActionsClient constructor to avoid real HTTP setup.
         with patch("valkey_oncall.cli.GitHubActionsClient", return_value=mock_client):
-            result = runner.invoke(cli, ["--db", db_path, "fetch-runs", "--workflow", "daily"])
+            result = runner.invoke(
+                cli, ["--db", db_path, "fetch-runs", "--workflow", "daily"]
+            )
 
         assert result.exit_code == 0
         assert "GITHUB_TOKEN" in result.stderr
