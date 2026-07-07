@@ -627,6 +627,13 @@ ${styles}
   <div class="stat"><div class="stat-val">${unique_tests}</div><div class="stat-label">unique failures</div></div>
 </div>
 
+<div class="tabs" role="tablist">
+  <button class="tab active" data-tab="heatmap" role="tab">Heatmap</button>
+  <button class="tab" data-tab="scorecard" role="tab">Scorecard</button>
+  <button class="tab" data-tab="rundetails" role="tab">Run Details</button>
+</div>
+
+<div class="tab-panel active" id="tab-heatmap" role="tabpanel">
 <table>
   <caption class="hint" style="text-align:left; caption-side:top; margin-bottom:8px;">
     Columns are days, rows are unique test failures. Each cell shows how many jobs hit that failure on that day.
@@ -643,7 +650,9 @@ ${styles}
     ${test_rows}
   </tbody>
 </table>
+</div>
 
+<div class="tab-panel" id="tab-scorecard" role="tabpanel">
 <div class="section">
   <h2>Flaky Test Scorecard</h2>
   <p class="hint">Every test that has failed in recorded CI history, ranked worst-first — the full flaky roster, independent of the recent heatmap above.
@@ -671,7 +680,9 @@ ${styles}
     <tbody id="scorecard-body">${scorecard_rows}</tbody>
   </table>
 </div>
+</div>
 
+<div class="tab-panel" id="tab-rundetails" role="tabpanel">
 <div class="section">
   <h2>Run Details (newest first)</h2>
   <p class="hint">Each row is one daily CI run. Status shows failed/total jobs. Numbered links like [1][2] go to the specific job logs on GitHub. Hover over a commit SHA to see the commit message.</p>
@@ -679,6 +690,7 @@ ${styles}
     <thead><tr><th>Date</th><th>Status</th><th>Commit</th><th>#</th><th>Unique Failures</th><th>Failed Jobs</th><th>Commits since prev run</th></tr></thead>
     <tbody>${run_detail_rows}</tbody>
   </table>
+</div>
 </div>
 
 <details>

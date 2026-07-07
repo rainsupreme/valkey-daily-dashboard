@@ -64,6 +64,13 @@ pre { background: #161b22; padding: 12px; border-radius: 6px; overflow-x: auto;
 .cat-chip { background:#161b22; border:1px solid #30363d; color:#8b949e; padding:1px 6px; border-radius:4px; font-size:10px; }
 .spark { vertical-align: middle; }
 .stale-row { opacity: 0.45; }
+.tabs { display: flex; gap: 4px; margin: 20px 0 16px; border-bottom: 1px solid #30363d; }
+.tab { background: none; border: none; color: #8b949e; font-size: 13px; padding: 8px 14px;
+       cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; font-family: inherit; }
+.tab:hover { color: #c9d1d9; }
+.tab.active { color: #f0f6fc; border-bottom-color: #f78166; font-weight: 600; }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
 #scorecard-controls { margin-bottom: 8px; font-size: 11px; color: #8b949e; }
 #scorecard-controls select, #scorecard-controls button { background:#161b22; color:#c9d1d9;
   border:1px solid #30363d; border-radius:4px; font-size:11px; padding:2px 6px; margin:0 2px; cursor:pointer; }

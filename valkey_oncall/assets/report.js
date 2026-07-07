@@ -54,3 +54,22 @@
       });
     });
 })();
+
+// Tab switching (Heatmap / Scorecard / Run Details).
+(function () {
+  var tabs = Array.prototype.slice.call(document.querySelectorAll(".tab"));
+  if (!tabs.length) return;
+  var panels = Array.prototype.slice.call(document.querySelectorAll(".tab-panel"));
+  tabs.forEach(function (tab) {
+    tab.addEventListener("click", function () {
+      var target = "tab-" + tab.getAttribute("data-tab");
+      tabs.forEach(function (t) {
+        t.classList.remove("active");
+      });
+      panels.forEach(function (p) {
+        p.classList.toggle("active", p.id === target);
+      });
+      tab.classList.add("active");
+    });
+  });
+})();
