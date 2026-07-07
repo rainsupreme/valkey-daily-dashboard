@@ -561,7 +561,7 @@ def _sparkline(series: List[int], width: int = 90, height: int = 16) -> str:
 
 
 def _render_scorecard_rows(scorecards: List[Dict]) -> str:
-    """Render the 90-day flaky-test leaderboard rows (ranked worst-first)."""
+    """Render the flaky-test leaderboard rows (ranked worst-first)."""
     rows = ""
     for i, sc in enumerate(scorecards, 1):
         name = sc["test_name"]
@@ -573,6 +573,7 @@ def _render_scorecard_rows(scorecards: List[Dict]) -> str:
         days_failed = sc.get("days_failed", 0)
         total_runs = sc.get("total_runs", 0)
         series = sc.get("daily_series", [])
+        stale = sc.get("stale", False)
 
         if trend > 0.05:
             arrow, tr_cls, tr_title = "↑", "trend-up", "getting worse"
@@ -582,16 +583,22 @@ def _render_scorecard_rows(scorecards: List[Dict]) -> str:
             arrow, tr_cls, tr_title = "→", "trend-flat", "flat"
         tr_title = f"{tr_title} (slope {trend:+.3f}/day)"
         rate_str = f"{rate:.0f}%" if rate >= 1 else f"{rate:.1f}%"
+        tr_cls_attr = ' class="stale-row"' if stale else ""
+        stale_title = " · stale (no failure in recent window)" if stale else ""
 
         rows += (
-            f'<tr data-cat="{html.escape(cat)}" data-class="{cls}" '
-            f'data-trend="{trend}" data-rate="{rate:.4f}" data-days="{days_failed}">'
+            f"<tr{tr_cls_attr} "
+            f'data-cat="{html.escape(cat)}" data-class="{cls}" '
+            f'data-trend="{trend}" data-rate="{rate:.4f}" data-days="{days_failed}" '
+            f'data-stale="{int(stale)}">'
             f'<td class="rank">{i}</td>'
-            f'<td class="test-name" title="{html.escape(name)}">{html.escape(short)}</td>'
+            f'<td class="test-name" title="{html.escape(name)}{stale_title}">'
+            f"{html.escape(short)}</td>"
             f'<td><span class="badge-{cls}" title="{cls}">{cls}</span></td>'
             f'<td class="{tr_cls}" title="{tr_title}">{arrow}</td>'
             f'<td><span class="cat-chip">{html.escape(cat)}</span></td>'
-            f'<td class="freq" title="failed {days_failed} of {total_runs} runs (90d)">{rate_str}</td>'
+            f'<td class="freq" title="failed {days_failed} of {total_runs} '
+            f'recorded days (all history)">{rate_str}</td>'
             f'<td class="freq">{days_failed}/{total_runs}</td>'
             f"<td>{_sparkline(series)}</td>"
             f"</tr>"
@@ -638,13 +645,14 @@ ${styles}
 </table>
 
 <div class="section">
-  <h2>Flaky Test Scorecard — last 90 days</h2>
-  <p class="hint">Every test that failed in the last 90 days, ranked worst-first — the full flaky roster, independent of the recent heatmap above.
-    Class: <span class="badge-persistent">persistent</span> ≥50% ·
-    <span class="badge-flaky">flaky</span> 1–50% ·
-    <span class="badge-rare">rare</span> &lt;1%.
-    Trend: <span class="trend-up">↑</span> worse / <span class="trend-down">↓</span> better / <span class="trend-flat">→</span> flat.
-    "90d activity" sparkline shows per-day failure counts.
+  <h2>Flaky Test Scorecard</h2>
+  <p class="hint">Every test that has failed in recorded CI history, ranked worst-first — the full flaky roster, independent of the recent heatmap above.
+    Rate = share of all recorded CI days the test failed (the denominator grows as history accrues, so low rates become expressible over time).
+    Class: <span class="badge-persistent">persistent</span> = fails a majority of runs, or the last 7 runs straight ·
+    <span class="badge-flaky">flaky</span> = recurring / intermittent ·
+    <span class="badge-rare">rare</span> = a single one-off failure.
+    Trend: <span class="trend-up">↑</span> worse / <span class="trend-down">↓</span> better / <span class="trend-flat">→</span> flat (recent window).
+    Greyed rows are <b>stale</b> (no failure in the recent window). The activity sparkline shows per-day failure counts over the recent window.
   </p>
   <div id="scorecard-controls">
     <label>Class:
@@ -659,7 +667,7 @@ ${styles}
     <button data-sort="days">days</button>
   </div>
   <table class="scorecard-table">
-    <thead><tr><th>#</th><th>Test</th><th>Class</th><th>Trend</th><th>Category</th><th title="Failure rate over last 90 days">90d rate</th><th>Days</th><th>90d activity</th></tr></thead>
+    <thead><tr><th>#</th><th>Test</th><th>Class</th><th>Trend</th><th>Category</th><th title="Share of all recorded CI days the test failed">Rate</th><th>Days</th><th title="Per-day failures over the recent window">Recent activity</th></tr></thead>
     <tbody id="scorecard-body">${scorecard_rows}</tbody>
   </table>
 </div>
