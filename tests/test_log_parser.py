@@ -161,6 +161,18 @@ class TestTimeoutPattern:
         # Should be "spawn timeout in tests/unit/wait.tcl" (no duplication)
         assert failures[0].test_name.count("tests/unit/wait.tcl") == 1
 
+    def test_summary_timeout_bare_pid_attributes_to_file(self) -> None:
+        """*** [TIMEOUT]: pid:NNNNN in tests/x.tcl (bare pid, no ' - file')
+        should attribute to the file as a spawn timeout, not a pid token."""
+        log = (
+            "!!! WARNING The following tests failed:\n"
+            "*** [TIMEOUT]: pid:37814 in tests/unit/cluster/failover.tcl\n"
+        )
+        failures = parse_job_log(log)
+        assert len(failures) == 1
+        assert failures[0].test_name == "spawn timeout in tests/unit/cluster/failover.tcl"
+        assert "pid:" not in failures[0].test_name
+
 
 class TestGtestPattern:
     """Parser extracts failures from Google Test output."""

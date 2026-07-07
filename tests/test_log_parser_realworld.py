@@ -531,3 +531,71 @@ class TestSanitizeCachedFailure:
     def test_keeps_real_test_name_unchanged(self) -> None:
         name = "Test dual-channel-replication primary gets cob overrun in tests/integration/dual-channel-replication.tcl"
         assert sanitize_cached_failure(name) == name
+
+
+# ---------------------------------------------------------------------------
+# 12. Server crash bucket (issue #1 follow-up, Track B)
+# A failed job with a Valkey crash signature but no attributable test name
+# gets a dedicated "<job>: server crash" bucket (signal in the detail),
+# distinct from the generic unattributed bucket (build breaks / timeouts).
+# Distilled from real sanitizer job 83957022030 (SIGSEGV, no [err] marker).
+# ---------------------------------------------------------------------------
+
+_SERVER_CRASH_NO_TEST = """\
+Testing unit/moduleapi/misc
+[ok]: RESP3: RM_ReplyWithError: an error reply (1 ms)
+135168:X 29 Jun 2026 01:04:42.191 # valkey 255.255.255 crashed by signal: 11, si_code: 0
+135168:X 29 Jun 2026 01:04:42.191 # Accessing address: 0x3e90002178f
+135168:X 29 Jun 2026 01:04:42.191 # Killed by PID: 137103, UID: 1001
+135168:X 29 Jun 2026 01:04:42.191 # Crashed running the instruction at: 0x7f17daf0e80b
+------ STACK TRACE ------
+Total test duration: 242 seconds
+WARNING 1 test(s) failed.
+##[error]Process completed with exit code 1.
+"""
+
+
+class TestServerCrashBucket:
+    """Crash with no attributable test -> distinct per-job 'server crash' bucket."""
+
+    def test_crash_becomes_server_crash_bucket(self) -> None:
+        fs = parse_job_log(_SERVER_CRASH_NO_TEST, job_name="test-sanitizer-address (clang)")
+        assert len(fs) == 1
+        assert fs[0].test_name == "test-sanitizer-address (clang): server crash"
+        assert "unattributed" not in fs[0].test_name
+        # signal surfaced in the error detail
+        assert "signal: 11" in fs[0].error_summary
+
+    def test_crash_bucket_without_job_name(self) -> None:
+        fs = parse_job_log(_SERVER_CRASH_NO_TEST)
+        assert fs[0].test_name == "server crash"
+
+    def test_attributed_test_takes_precedence_over_crash(self) -> None:
+        # A crash that DID produce an [err] stays attributed to the test.
+        log = _SERVER_CRASH_NO_TEST + "[err]: some real test in tests/unit/foo.tcl\nboom\n"
+        fs = parse_job_log(log, job_name="test-x")
+        names = {f.test_name for f in fs}
+        assert "some real test in tests/unit/foo.tcl" in names
+        assert "test-x: server crash" not in names
+
+    def test_reports_last_fatal_crash_not_earlier_benign(self) -> None:
+        # Real logs may contain an earlier intentional crash-test (signal 6)
+        # that passes, then the actual fatal crash (signal 11) that ends the
+        # run. The detail must report the fatal (last) one, with its address.
+        log = (
+            "Testing unit/other\n"
+            "999:M 29 Jun 2026 00:00:00.000 # valkey crashed by signal: 6, si_code: 0\n"
+            "999:M 29 Jun 2026 00:00:00.000 # Accessing address: 0xdead\n"
+            "[ok]: DEBUG SEGFAULT / crash log format (5 ms)\n"
+            "135168:X 29 Jun 2026 01:04:42.191 # valkey crashed by signal: 11, si_code: 0\n"
+            "135168:X 29 Jun 2026 01:04:42.191 # Accessing address: 0x3e90002178f\n"
+            "135168:X 29 Jun 2026 01:04:42.191 # Killed by PID: 137103, UID: 1001\n"
+            "WARNING 1 test(s) failed.\n"
+            "##[error]Process completed with exit code 1.\n"
+        )
+        fs = parse_job_log(log, job_name="test-sanitizer-address (clang)")
+        assert len(fs) == 1
+        assert fs[0].test_name == "test-sanitizer-address (clang): server crash"
+        assert "signal: 11" in fs[0].error_summary
+        assert "0x3e90002178f" in fs[0].error_summary
+        assert "signal: 6" not in fs[0].error_summary
