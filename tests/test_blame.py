@@ -1,11 +1,20 @@
 """Tests for the blame module."""
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
 
 from valkey_oncall.blame import compute_blame
 from valkey_oncall.cache import Cache
+
+# Anchor test runs to a recent window so they fall inside compute_blame's
+# rolling `days` window regardless of the calendar date the suite runs on.
+_BASE = datetime.now(timezone.utc) - timedelta(days=15)
+
+
+def _day(offset):
+    return (_BASE + timedelta(days=offset)).strftime("%Y-%m-%d")
 
 
 @pytest.fixture
@@ -63,15 +72,15 @@ class TestComputeBlame:
     def test_green_to_red_transition(self, cache, mock_client):
         """Test that a green→red transition identifies blame commits."""
         # Day 1: passing
-        cache.store_runs([_make_run(100, "2026-05-01", "success", "aaa")])
+        cache.store_runs([_make_run(100, _day(0), "success", "aaa")])
         cache.store_jobs(100, [_make_job(200, 100, "success")])
 
         # Day 2: passing
-        cache.store_runs([_make_run(101, "2026-05-02", "success", "bbb")])
+        cache.store_runs([_make_run(101, _day(1), "success", "bbb")])
         cache.store_jobs(101, [_make_job(201, 101, "success")])
 
         # Day 3: failing with a new test failure
-        cache.store_runs([_make_run(102, "2026-05-03", "failure", "ccc")])
+        cache.store_runs([_make_run(102, _day(2), "failure", "ccc")])
         cache.store_jobs(102, [_make_job(202, 102)])
         cache.store_failures(
             202,
@@ -89,8 +98,8 @@ class TestComputeBlame:
 
         rec = result[0]
         assert rec["test_name"] == "flaky test in tests/unit/foo.tcl"
-        assert rec["regression_date"] == "2026-05-03"
-        assert rec["last_pass_date"] == "2026-05-02"
+        assert rec["regression_date"] == _day(2)
+        assert rec["last_pass_date"] == _day(1)
         assert rec["last_pass_sha"] == "bbb"
         assert rec["first_fail_sha"] == "ccc"
         assert rec["commit_count"] == 2
@@ -98,7 +107,7 @@ class TestComputeBlame:
 
     def test_already_failing_at_window_start(self, cache, mock_client):
         """Test that tests failing from the start get a note."""
-        cache.store_runs([_make_run(100, "2026-05-01", "failure", "aaa")])
+        cache.store_runs([_make_run(100, _day(0), "failure", "aaa")])
         cache.store_jobs(100, [_make_job(200, 100)])
         cache.store_failures(
             200,
@@ -120,11 +129,11 @@ class TestComputeBlame:
     def test_multiple_tests_different_regression_dates(self, cache, mock_client):
         """Tests regressing on different days are sorted newest first."""
         # Day 1: all green
-        cache.store_runs([_make_run(100, "2026-05-01", "success", "a1")])
+        cache.store_runs([_make_run(100, _day(0), "success", "a1")])
         cache.store_jobs(100, [_make_job(200, 100, "success")])
 
         # Day 2: test_A starts failing
-        cache.store_runs([_make_run(101, "2026-05-02", "failure", "a2")])
+        cache.store_runs([_make_run(101, _day(1), "failure", "a2")])
         cache.store_jobs(101, [_make_job(201, 101)])
         cache.store_failures(
             201,
@@ -138,7 +147,7 @@ class TestComputeBlame:
         )
 
         # Day 3: test_B also starts failing
-        cache.store_runs([_make_run(102, "2026-05-03", "failure", "a3")])
+        cache.store_runs([_make_run(102, _day(2), "failure", "a3")])
         cache.store_jobs(102, [_make_job(202, 102)])
         cache.store_failures(
             202,
@@ -152,17 +161,17 @@ class TestComputeBlame:
         assert len(result) == 2
         # Newest regression first
         assert result[0]["test_name"] == "test_B"
-        assert result[0]["regression_date"] == "2026-05-03"
+        assert result[0]["regression_date"] == _day(2)
         assert result[1]["test_name"] == "test_A"
-        assert result[1]["regression_date"] == "2026-05-02"
+        assert result[1]["regression_date"] == _day(1)
 
     def test_api_error_gracefully_handled(self, cache, mock_client):
         """If compare_commits fails, blame_commits is empty."""
         mock_client.compare_commits.side_effect = Exception("API error")
 
-        cache.store_runs([_make_run(100, "2026-05-01", "success", "aaa")])
+        cache.store_runs([_make_run(100, _day(0), "success", "aaa")])
         cache.store_jobs(100, [_make_job(200, 100, "success")])
-        cache.store_runs([_make_run(101, "2026-05-02", "failure", "bbb")])
+        cache.store_runs([_make_run(101, _day(1), "failure", "bbb")])
         cache.store_jobs(101, [_make_job(201, 101)])
         cache.store_failures(
             201,
