@@ -12,7 +12,12 @@ from typing import Dict, List
 
 from valkey_oncall.cache import Cache
 from valkey_oncall.log_parser import sanitize_cached_failure
-from valkey_oncall.scorecard import RESOLVED_QUIET_RUNS, compute_scorecards
+from valkey_oncall.scorecard import (
+    COOLING_QUIET_RUNS,
+    PERSISTENT_STREAK_DAYS,
+    RESOLVED_QUIET_RUNS,
+    compute_scorecards,
+)
 
 _ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 
@@ -333,6 +338,9 @@ def render_html(data: Dict) -> str:
         run_detail_rows=run_detail_rows,
         scorecard_rows=scorecard_rows,
         resolved_section=resolved_section,
+        persistent_streak=PERSISTENT_STREAK_DAYS,
+        cooling_runs=COOLING_QUIET_RUNS,
+        resolved_runs=RESOLVED_QUIET_RUNS,
         report_json=html.escape(json.dumps(data, indent=2)),
     )
 
@@ -680,11 +688,11 @@ ${styles}
   <h2>Flaky Test Scorecard</h2>
   <p class="hint">Every test that has failed in recorded CI history, ranked worst-first — the full flaky roster, independent of the recent heatmap above.
     Rate = share of all recorded CI days the test failed (the denominator grows as history accrues, so low rates become expressible over time).
-    Class: <span class="badge-persistent">persistent</span> = fails a majority of runs, or the last 7 runs straight ·
+    Class: <span class="badge-persistent">persistent</span> = fails a majority of runs, or the last ${persistent_streak} runs straight ·
     <span class="badge-flaky">flaky</span> = recurring / intermittent ·
     <span class="badge-rare">rare</span> = a single one-off failure.
     Trend: <span class="trend-up">↑</span> worse / <span class="trend-down">↓</span> better / <span class="trend-flat">→</span> flat (recent window).
-    Greyed rows are cooling off (no failure in the last 7+ runs); tests quiet for 30+ runs drop to the collapsed <b>Resolved</b> sub-list below. The activity sparkline shows per-day failure counts over the recent window.
+    Greyed rows are cooling off (no failure in the last ${cooling_runs}+ runs); tests quiet for ${resolved_runs}+ runs drop to the collapsed <b>Resolved</b> sub-list below. The activity sparkline shows per-day failure counts over the recent window.
   </p>
   <div id="scorecard-controls">
     <label>Class:

@@ -156,3 +156,17 @@ class TestResolvedSubList:
         _store_failure(cache, 100, 200, _day(1), "live in tests/unit/new.tcl")
         html = render_html(generate_report_data(cache, days=90))
         assert 'class="resolved-block"' not in html
+
+    def test_legend_reflects_threshold_constants(self, cache):
+        from valkey_oncall.scorecard import (
+            COOLING_QUIET_RUNS,
+            PERSISTENT_STREAK_DAYS,
+            RESOLVED_QUIET_RUNS,
+        )
+
+        # Thresholds show in the legend regardless of whether anything resolved.
+        _store_failure(cache, 100, 200, _day(1), "live in tests/unit/new.tcl")
+        html = render_html(generate_report_data(cache, days=90))
+        assert f"last {PERSISTENT_STREAK_DAYS} runs straight" in html
+        assert f"last {COOLING_QUIET_RUNS}+ runs" in html
+        assert f"{RESOLVED_QUIET_RUNS}+ runs drop to" in html

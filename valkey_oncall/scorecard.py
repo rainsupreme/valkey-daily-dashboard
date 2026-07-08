@@ -19,6 +19,10 @@ PERSISTENT_STREAK_DAYS = 7
 # It reappears in the active roster the moment it fails again.
 RESOLVED_QUIET_RUNS = 30
 
+# A test quiet for at least this many clean runs (but not yet resolved) is
+# "cooling off" -- greyed in the active roster as a soft fixed signal.
+COOLING_QUIET_RUNS = 7
+
 
 def _recent_streak(daily_series: List[int]) -> int:
     """Count trailing consecutive days with >=1 failure (most-recent first)."""
@@ -191,8 +195,8 @@ def compute_scorecards(
         # only record failures, this "quiet run count" is our proxy for fixed.
         runs_since_last_fail = sum(1 for d in all_dates if d > last_seen)
         resolved = runs_since_last_fail >= RESOLVED_QUIET_RUNS
-        # "stale" (greyed) = cooling off: quiet for a week+ but not yet resolved.
-        stale = runs_since_last_fail >= 7
+        # "stale" (greyed) = cooling off: quiet for a while but not resolved.
+        stale = runs_since_last_fail >= COOLING_QUIET_RUNS
 
         scorecards.append(
             {
