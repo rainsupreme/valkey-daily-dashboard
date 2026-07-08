@@ -226,6 +226,33 @@ class TestRegressions:
         assert "en.wikipedia.org/wiki/Bayesian_inference" in reg
         assert 'target="_blank"' in reg
 
+    def test_ongoing_vs_fixed_split_and_surprise_pct(self, cache):
+        from valkey_oncall.blame import REGRESSION_ONGOING_QUIET_RUNS as q
+
+        # NOTE: _day(offset) = offset days AGO, so offset 0 is the newest run.
+        # ONGOING: green yesterday, fails today (quiet 0 runs).
+        self._green_run(cache, 700, 9700, _day(1), "og")
+        _store_failure(cache, 701, 9701, _day(0), "livebreak in tests/unit/b.tcl")
+        # FIXED: fails q+3 days ago, then clean on every more-recent run.
+        self._green_run(cache, 702, 9702, _day(q + 4), "gf")
+        _store_failure(cache, 703, 9703, _day(q + 3), "oldbreak in tests/unit/a.tcl")
+        rid = 704
+        for off in range(2, q + 3):  # q+1 clean days newer than the failure
+            self._green_run(cache, rid, rid + 9000, _day(off), f"c{off}")
+            rid += 1
+
+        html = render_html(generate_report_data(cache, days=90))
+        reg = html[html.index('id="tab-regressions"') :]
+        assert '<details class="resolved-block"' in reg
+        assert "Likely fixed" in reg
+        block = reg.index('<details class="resolved-block"')
+        # ongoing sits in the main table (above the fixed block)...
+        assert reg.index("livebreak in tests/unit/b.tcl") < block
+        # ...and the fixed one sits inside the collapsed block.
+        assert reg.index("oldbreak in tests/unit/a.tcl") > block
+        # confidence badge renders a surprise percentage.
+        assert "%</span>" in reg
+
     def test_run_detail_has_compare_link_without_client(self, cache):
         # Two consecutive failing runs with different SHAs -> compare link.
         self._green_run(cache, 500, 600, _day(3), "aaaaaaa1111")

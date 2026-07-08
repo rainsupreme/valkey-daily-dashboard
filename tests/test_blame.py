@@ -219,6 +219,27 @@ class TestComputeBlame:
         assert rec["post_onset_rate"] == 1.0
         assert rec["confidence"] == "high", rec
         assert rec["p0_hat"] < 0.05
+        assert rec["ongoing"] is True  # still failing on the most recent run
+
+    def test_regression_marked_fixed_when_quiet(self, cache, mock_client):
+        """A regression whose test goes quiet for >= threshold runs is fixed."""
+        from valkey_oncall.blame import REGRESSION_ONGOING_QUIET_RUNS as q
+
+        rid = 100
+        for off in range(0, 3):  # clean
+            _store(cache, rid, off)
+            rid += 1
+        for off in range(3, 5):  # breaks
+            _store(cache, rid, off, "brk")
+            rid += 1
+        for off in range(5, 5 + q + 2):  # then quiet for q+2 runs
+            _store(cache, rid, off)
+            rid += 1
+
+        result = compute_blame(cache, mock_client, days=90)
+        rec = next(r for r in result if r["test_name"] == "brk")
+        assert rec["runs_since_last_fail"] >= q
+        assert rec["ongoing"] is False
 
     def test_confidence_low_for_known_flake(self, cache, mock_client):
         """A historically flaky test flagging again -> low confidence.

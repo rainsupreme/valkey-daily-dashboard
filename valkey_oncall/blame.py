@@ -13,6 +13,12 @@ from valkey_oncall.stats import regression_confidence
 
 logger = logging.getLogger(__name__)
 
+# A detected regression whose test has stayed quiet for at least this many
+# clean runs since its last failure is treated as "likely fixed" and moved to
+# a collapsed sub-list. Tighter than the scorecard's resolved window because a
+# regression is acute -- a couple of clean CI weeks is a strong fixed signal.
+REGRESSION_ONGOING_QUIET_RUNS = 14
+
 
 def compute_blame(
     cache: Cache,
@@ -91,6 +97,14 @@ def compute_blame(
         post_fails = sum(1 for d in fdates if d >= onset)
         return regression_confidence(pre_fails, pre_total, post_fails, post_total)
 
+    def _quiet_runs(test_name: str) -> int:
+        """Clean runs since the test's most recent failure (any time)."""
+        fdates = hist_fail_dates.get(test_name, set())
+        if not fdates:
+            return len(all_dates)
+        last = max(fdates)
+        return sum(1 for d in all_dates if d > last)
+
     # For each test, find the first appearance (green→red transition)
     # A transition is: test NOT in run[i-1] failures, but IS in run[i] failures
     all_tests = set()
@@ -131,6 +145,8 @@ def compute_blame(
                     "confidence": "unknown",
                     "burst_p": None,
                     "p0_hat": None,
+                    "runs_since_last_fail": _quiet_runs(test_name),
+                    "ongoing": _quiet_runs(test_name) < REGRESSION_ONGOING_QUIET_RUNS,
                     "note": "Already failing at start of window — extend --days for full history",
                 }
             )
@@ -158,6 +174,7 @@ def compute_blame(
         conf_label, burst_p, p0_hat = _confidence(
             test_name, first_fail["run_date"][:10]
         )
+        quiet = _quiet_runs(test_name)
         blame_records.append(
             {
                 "test_name": test_name,
@@ -171,6 +188,8 @@ def compute_blame(
                 "confidence": conf_label,
                 "burst_p": burst_p,
                 "p0_hat": p0_hat,
+                "runs_since_last_fail": quiet,
+                "ongoing": quiet < REGRESSION_ONGOING_QUIET_RUNS,
             }
         )
 

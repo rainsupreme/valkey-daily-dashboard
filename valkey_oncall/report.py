@@ -11,7 +11,7 @@ from pathlib import Path
 from string import Template
 from typing import Dict, List
 
-from valkey_oncall.blame import compute_blame
+from valkey_oncall.blame import REGRESSION_ONGOING_QUIET_RUNS, compute_blame
 from valkey_oncall.cache import Cache
 from valkey_oncall.log_parser import sanitize_cached_failure
 from valkey_oncall.scorecard import (
@@ -357,7 +357,11 @@ def render_html(data: Dict) -> str:
     resolved = [s for s in all_scorecards if s.get("resolved")]
     scorecard_rows = _render_scorecard_rows(active)
     resolved_section = _render_resolved_section(resolved)
-    regressions_rows = _render_regression_rows(data.get("regressions", []), repo)
+    all_regs = data.get("regressions", [])
+    ongoing = [r for r in all_regs if r.get("ongoing", True)]
+    fixed = [r for r in all_regs if not r.get("ongoing", True)]
+    regressions_rows = _render_regression_rows(ongoing, repo)
+    fixed_regressions = _render_fixed_regressions(fixed, repo)
 
     return Template(_HTML_TEMPLATE).substitute(
         styles=_asset("report.css"),
@@ -377,6 +381,7 @@ def render_html(data: Dict) -> str:
         scorecard_rows=scorecard_rows,
         resolved_section=resolved_section,
         regressions_rows=regressions_rows,
+        fixed_regressions=fixed_regressions,
         persistent_streak=PERSISTENT_STREAK_DAYS,
         cooling_runs=COOLING_QUIET_RUNS,
         resolved_runs=RESOLVED_QUIET_RUNS,
@@ -676,6 +681,23 @@ def _render_resolved_section(resolved: List[Dict]) -> str:
     )
 
 
+def _surprise_str(burst_p) -> str:
+    """Honest 'surprise' %: how unusual the burst is vs the test's baseline.
+
+    = (1 - burst_p) * 100. NOT a probability of regression -- burst_p is
+    P(data | baseline), so this reads as 'more extreme than X% of outcomes
+    the test's normal flakiness would produce'.
+    """
+    if burst_p is None:
+        return "—"
+    pct = (1.0 - burst_p) * 100.0
+    if pct >= 99.9:
+        return ">99.9%"
+    if pct >= 10:
+        return f"{pct:.0f}%"
+    return f"{pct:.1f}%"
+
+
 def _render_regression_rows(records: List[Dict], repo: str = "valkey-io/valkey") -> str:
     """Render detected green->red regressions (blame), newest first.
 
@@ -686,7 +708,7 @@ def _render_regression_rows(records: List[Dict], repo: str = "valkey-io/valkey")
     if not records:
         return (
             '<tr><td colspan="7" class="no-commits">'
-            "No green→red regressions detected in the window.</td></tr>"
+            "No ongoing regressions detected. 🎉</td></tr>"
         )
     conf_badge = {
         "high": "badge-persistent",
@@ -726,9 +748,12 @@ def _render_regression_rows(records: List[Dict], repo: str = "valkey-io/valkey")
             suspect = '<span class="no-commits">—</span>'
         p0_str = f"{p0 * 100:.2f}%" if p0 is not None else "—"
         if burst_p is not None:
+            surprise = (1.0 - burst_p) * 100.0
             conf_title = (
-                f"burst probability {burst_p:.3g} under the learned baseline "
-                f"({p0_str}) · post-onset {rate:.0f}%"
+                f"surprise vs baseline: more unusual than {surprise:.1f}% of this "
+                f"test's normal-flakiness outcomes (burst probability {burst_p:.3g}, "
+                f"baseline {p0_str}, post-onset {rate:.0f}%). Not a literal "
+                f"probability of regression."
             )
         else:
             conf_title = "no clean pre-onset history to learn a baseline"
@@ -741,11 +766,34 @@ def _render_regression_rows(records: List[Dict], repo: str = "valkey-io/valkey")
             f"<td>{suspect}</td>"
             f'<td class="freq" title="learned baseline fail rate (posterior mean)">'
             f"{p0_str}</td>"
-            f'<td><span class="{cls}" title="{html.escape(conf_title)}">{conf}</span></td>'
+            f'<td><span class="{cls}" title="{html.escape(conf_title)}">'
+            f"{_surprise_str(burst_p)}</span></td>"
             f'<td class="freq">{rate:.0f}%</td>'
             f"</tr>"
         )
     return rows
+
+
+def _render_fixed_regressions(
+    records: List[Dict], repo: str = "valkey-io/valkey"
+) -> str:
+    """Render likely-fixed regressions as a collapsed <details> sub-list.
+
+    Returns "" when nothing is fixed, so the block is omitted entirely.
+    """
+    if not records:
+        return ""
+    rows = _render_regression_rows(records, repo)
+    return (
+        '<details class="resolved-block">'
+        f"<summary>Likely fixed ({len(records)}) — no failure in the last "
+        f"{REGRESSION_ONGOING_QUIET_RUNS}+ runs</summary>"
+        '<table class="scorecard-table">'
+        "<thead><tr><th>Test</th><th>First failed</th><th>Last passed</th>"
+        "<th>Suspect range</th><th>Baseline</th><th>Confidence</th>"
+        "<th>Post-onset</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table></details>"
+    )
 
 
 _HTML_TEMPLATE = """\
@@ -840,24 +888,25 @@ ${styles}
 <div class="tab-panel" id="tab-regressions" role="tabpanel">
 <div class="section">
   <h2>Regressions (blame)</h2>
-  <p class="hint">Detected green→red transitions, newest first. <b>Suspect range</b> links to the commits between the last green run and the first red run — the starting point for bisecting a regression.
-    <b>Baseline</b> is the test's learned historical fail rate; <b>Confidence</b> is how surprising the failures since onset are against that baseline:
-    <span class="badge-persistent">high</span> (e.g. a clean test breaking) ·
-    <span class="badge-flaky">medium</span> ·
-    <span class="badge-rare">low</span> (plausibly just this test's usual flakiness) ·
-    <span class="badge-rare">unknown</span> (no clean pre-onset history).
-    Post-onset = share of runs that failed since the transition. Hover a confidence badge for the burst probability.
+  <p class="hint">Ongoing green→red transitions, newest first (likely-fixed ones collapse below). <b>Suspect range</b> links to the commits between the last green run and the first red run — the starting point for bisecting a regression.
+    <b>Baseline</b> is the test's learned historical fail rate. <b>Confidence</b> is a <i>surprise</i> score — how unusual the failures since onset are versus that baseline (100% − burst probability), <i>not</i> a literal probability of regression:
+    <span class="badge-persistent">≥99%</span> (e.g. a clean test breaking) ·
+    <span class="badge-flaky">≥90%</span> ·
+    <span class="badge-rare">lower</span> (plausibly just this test's usual flakiness) ·
+    <span class="badge-rare">—</span> (no clean pre-onset history).
+    Post-onset = share of runs that failed since the transition. Hover a confidence badge for details.
   </p>
   <table class="scorecard-table">
-    <thead><tr><th>Test</th><th>First failed</th><th>Last passed</th><th>Suspect range</th><th title="learned baseline fail rate (posterior mean)">Baseline</th><th>Confidence</th><th title="share of runs failed since onset">Post-onset</th></tr></thead>
+    <thead><tr><th>Test</th><th>First failed</th><th>Last passed</th><th>Suspect range</th><th title="learned baseline fail rate (posterior mean)">Baseline</th><th title="surprise vs baseline (100% − burst probability)">Confidence</th><th title="share of runs failed since onset">Post-onset</th></tr></thead>
     <tbody>${regressions_rows}</tbody>
   </table>
+  ${fixed_regressions}
   <details class="methodology">
     <summary>How this works</summary>
     <div class="hint">
       <p>Confidence is <a href="https://en.wikipedia.org/wiki/Bayesian_inference" target="_blank" rel="noopener noreferrer">Bayesian</a>, not a fixed threshold. Each test's baseline fail rate is modelled as a <a href="https://en.wikipedia.org/wiki/Beta_distribution" target="_blank" rel="noopener noreferrer">Beta distribution</a> learned from its full history — the <a href="https://en.wikipedia.org/wiki/Conjugate_prior" target="_blank" rel="noopener noreferrer">conjugate prior</a> for a pass/fail rate, seeded with a weak <a href="https://en.wikipedia.org/wiki/Jeffreys_prior" target="_blank" rel="noopener noreferrer">Jeffreys prior</a> so a test with little history isn't over-trusted.</p>
-      <p>We then ask how surprising the failures <i>since onset</i> are under that baseline: the upper tail of the <a href="https://en.wikipedia.org/wiki/Beta-binomial_distribution" target="_blank" rel="noopener noreferrer">Beta-binomial</a> <a href="https://en.wikipedia.org/wiki/Posterior_predictive_distribution" target="_blank" rel="noopener noreferrer">posterior-predictive</a> distribution — the "burst probability" shown when you hover a confidence badge. A tiny probability means the burst is very unlikely to be the test's usual flakiness, so confidence it's a real regression is high.</p>
-      <p>Why it adapts per test: a historically clean test is damning after a single fresh failure, while a chronically flaky test needs a much larger burst before we believe it regressed. The threshold moves with each test's own history instead of a one-size-fits-all rate.</p>
+      <p>The "burst probability" is how likely the failures <i>since onset</i> are under that baseline — the upper tail of the <a href="https://en.wikipedia.org/wiki/Beta-binomial_distribution" target="_blank" rel="noopener noreferrer">Beta-binomial</a> <a href="https://en.wikipedia.org/wiki/Posterior_predictive_distribution" target="_blank" rel="noopener noreferrer">posterior-predictive</a> distribution. The displayed <b>Confidence = 100% − burst probability</b>: a <i>surprise</i> score meaning "more extreme than X% of what this test's normal flakiness would produce". It is <b>not</b> P(regression) — that would be the <a href="https://en.wikipedia.org/wiki/Misuse_of_p-values" target="_blank" rel="noopener noreferrer">transposed-conditional fallacy</a> (it answers <i>P(data | no&nbsp;regression)</i>, not the reverse).</p>
+      <p>Why it adapts per test: a historically clean test is damning after a single fresh failure, while a chronically flaky test needs a much larger burst before it looks surprising. A regression whose test then stays quiet for 14+ runs is treated as likely fixed and collapses into the sub-list above.</p>
     </div>
   </details>
 </div>
