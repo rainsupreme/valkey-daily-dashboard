@@ -610,8 +610,9 @@ def _sparkline(series: List[int], width: int = 90, height: int = 16) -> str:
             f'height="{max(h, 1)}" fill="{color}"/>'
         )
     return (
-        f'<svg class="spark" width="{width}" height="{height}" '
-        f'viewBox="0 0 {width} {height}">{"".join(bars)}</svg>'
+        f'<svg class="spark" width="100%" height="{height}" '
+        f'viewBox="0 0 {width} {height}" preserveAspectRatio="none">'
+        f"{''.join(bars)}</svg>"
     )
 
 
@@ -655,7 +656,7 @@ def _render_scorecard_rows(scorecards: List[Dict]) -> str:
             f'<td class="freq" title="failed {days_failed} of {total_runs} '
             f'recorded days (all history)">{rate_str}</td>'
             f'<td class="freq">{days_failed}/{total_runs}</td>'
-            f"<td>{_sparkline(series)}</td>"
+            f'<td class="spark-cell">{_sparkline(series)}</td>'
             f"</tr>"
         )
     return rows
@@ -819,9 +820,9 @@ ${styles}
 
 <div class="tabs" role="tablist">
   <button class="tab active" data-tab="heatmap" role="tab">Heatmap</button>
-  <button class="tab" data-tab="scorecard" role="tab">Scorecard</button>
-  <button class="tab" data-tab="rundetails" role="tab">Run Details</button>
   <button class="tab" data-tab="regressions" role="tab">Regressions</button>
+  <button class="tab" data-tab="rundetails" role="tab">Run Details</button>
+  <button class="tab" data-tab="scorecard" role="tab">Flakiness Scorecard</button>
 </div>
 
 <div class="tab-panel active" id="tab-heatmap" role="tabpanel">
