@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List
 
 from valkey_oncall.cache import Cache
 from valkey_oncall.github_client import GitHubActionsClient
+
+logger = logging.getLogger(__name__)
 
 
 def compute_blame(
@@ -108,8 +111,14 @@ def compute_blame(
         if base_sha and head_sha and base_sha != head_sha:
             try:
                 commits = client.compare_commits(base_sha, head_sha)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "blame compare_commits %s...%s failed (token may lack "
+                    "Contents:Read); blame_commits will be empty: %s",
+                    base_sha[:7],
+                    head_sha[:7],
+                    exc,
+                )
 
         blame_records.append(
             {
