@@ -9,24 +9,46 @@ from typing import Dict, List
 from valkey_oncall.cache import Cache
 from valkey_oncall.log_parser import sanitize_cached_failure
 
+# A test failing this many most-recent CI days in a row is treated as an
+# active regression ("persistent") rather than a flake, even if its
+# all-history rate is still low (e.g. a newly-broken test).
+PERSISTENT_STREAK_DAYS = 7
 
-def _classify(rate: float) -> str:
-    """Classify a failure rate into a flakiness category.
 
-    Bands (rate = fraction of runs in which the test failed):
-      * persistent (>= 50%): fails the majority of runs -- a clean
-        green->red boundary, so blame is reliable; treat as a real
-        regression.
-      * flaky (1% - 50%): intermittent. The 1% floor matches the
-        "must pass 100 runs" fix bar, so anything at/above it is worth
-        fixing.
-      * rare (< 1%): clears the 100-run bar -- effectively noise.
+def _recent_streak(daily_series: List[int]) -> int:
+    """Count trailing consecutive days with >=1 failure (most-recent first)."""
+    streak = 0
+    for v in reversed(daily_series):
+        if v > 0:
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def _classify(days_failed: int, total_runs: int, recent_streak: int = 0) -> str:
+    """Classify flakiness from failure *counts* + recent streak.
+
+    Bands:
+      * persistent: fails the majority of recorded runs (rate >= 50%) OR
+        has failed every run for the last ``PERSISTENT_STREAK_DAYS``
+        consecutive CI days -- actively/consistently broken, so it reads as
+        a real regression rather than a flake.
+      * rare: failed on exactly one CI day in all recorded history -- a
+        one-off; effectively noise.
+      * flaky: everything else -- recurring but intermittent.
+
+    We classify on counts rather than a sub-1% rate because with ~daily CI
+    the smallest expressible nonzero rate is 1/N (N = recorded days), so a
+    hardcoded "< 1%" band is unreachable until years of history accrue.
+    The rate itself is still reported for context.
     """
-    if rate >= 0.5:
+    rate = (days_failed / total_runs) if total_runs else 0.0
+    if rate >= 0.5 or recent_streak >= PERSISTENT_STREAK_DAYS:
         return "persistent"
-    if rate >= 0.01:
-        return "flaky"
-    return "rare"
+    if days_failed <= 1:
+        return "rare"
+    return "flaky"
 
 
 def _trend(daily_hits: List[int]) -> float:
@@ -46,16 +68,37 @@ def _trend(daily_hits: List[int]) -> float:
 
 
 def _extract_category(test_name: str) -> str:
-    """Extract test category from the file path in the test name."""
-    if " in tests/" in test_name:
-        path = test_name.split(" in tests/")[1]
-        # e.g. "unit/foo.tcl" -> "unit", "cluster/bar.tcl" -> "cluster"
-        parts = path.split("/")
-        if len(parts) >= 2:
-            return parts[0]
-    if "GTest" in test_name:
+    """Categorize a failure by its test *harness*, not its directory.
+
+    Valkey's tcl suites all boot a real server, so they are integration-
+    level regardless of whether they live under ``tests/unit``,
+    ``tests/unit/type`` or ``tests/integration`` -- the ``unit`` directory
+    name is historical and misleading. Only the C/C++ gtest suite contains
+    true unit tests, so ``unit`` is reserved for those.
+
+      * unit        -- C/C++ gtest unit tests (the only real unit tests)
+      * cluster     -- tcl tests exercising cluster mode
+      * sentinel    -- tcl sentinel tests
+      * modules     -- tcl module-API tests
+      * integration -- all other server-booting tcl tests
+      * other       -- job-level buckets (unattributed failures, sanitizer
+                       / build jobs) with no tcl file
+    """
+    name = test_name
+    # True unit tests: the C/C++ gtest binary, or a src/ path.
+    if "GTest" in name or " in src/" in name:
         return "unit"
-    if "sentinel" in test_name.lower():
+    if " in tests/" in name:
+        segs = name.split(" in tests/", 1)[1].split("/")
+        if "cluster" in segs:
+            return "cluster"
+        if "sentinel" in segs:
+            return "sentinel"
+        if "modules" in segs:
+            return "modules"
+        # unit/, unit/type/, integration/, ... are all server-booting tcl.
+        return "integration"
+    if "sentinel" in name.lower():
         return "sentinel"
     return "other"
 
@@ -67,16 +110,21 @@ def compute_scorecards(
     workflow: str = "daily.yml",
     repo: str = "valkey-io/valkey",
 ) -> Dict:
-    """Compute per-test flakiness scorecards over the given window.
+    """Compute per-test flakiness scorecards.
+
+    The failure *rate* and classification use ALL cached history (not just
+    the recent ``days`` window), so the denominator grows over time and low
+    rates become expressible -- with ~daily CI, a fixed window of N days
+    can never express a rate below 1/N. The trend, sparkline and the
+    recent-streak that drives the "persistent" badge use the recent
+    ``days``-day window, so the "getting worse lately" signal stays
+    recency-aware. ``stale`` marks tests with no failure in that window.
 
     Returns a dict with metadata and a list of test scorecards sorted by
     failure rate (descending).
     """
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
-        "%Y-%m-%dT00:00:00Z"
-    )
-
-    runs = cache.query_runs(repo=repo, workflow=workflow, branch=branch, since=since)
+    # Rate/roster span ALL cached runs; trend/sparkline span the last `days`.
+    runs = cache.query_runs(repo=repo, workflow=workflow, branch=branch)
     # Deduplicate to one run per day, skip in-progress
     seen_dates: set = set()
     valid_runs: List[Dict] = []
@@ -94,6 +142,10 @@ def compute_scorecards(
 
     all_dates = sorted(seen_dates)
     total_runs = len(valid_runs)
+    recent_cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
+        "%Y-%m-%d"
+    )
+    recent_dates = [d for d in all_dates if d >= recent_cutoff]
 
     # Gather failures per test per date
     # test_name -> {date -> count}
@@ -120,24 +172,29 @@ def compute_scorecards(
     # Build scorecards
     scorecards: List[Dict] = []
     for test_name, date_counts in test_failures.items():
-        days_failed = len(date_counts)
+        days_failed = len(date_counts)  # over ALL history
         total_hits = sum(date_counts.values())
         failure_rate = round(days_failed / total_runs, 4)
 
-        # Build daily series for trend (0 on days with no failure)
-        daily_series = [date_counts.get(d, 0) for d in all_dates]
+        # Recent series drives trend + sparkline + persistent streak.
+        daily_series = [date_counts.get(d, 0) for d in recent_dates]
+        streak = _recent_streak(daily_series)
+        last_seen = test_last_seen[test_name]
+        stale = last_seen < recent_cutoff
 
         scorecards.append(
             {
                 "test_name": test_name,
                 "category": _extract_category(test_name),
                 "first_seen": test_first_seen[test_name],
-                "last_seen": test_last_seen[test_name],
+                "last_seen": last_seen,
                 "days_failed": days_failed,
                 "total_hits": total_hits,
                 "total_runs": total_runs,
                 "failure_rate": failure_rate,
-                "classification": _classify(failure_rate),
+                "recent_streak": streak,
+                "stale": stale,
+                "classification": _classify(days_failed, total_runs, streak),
                 "trend": _trend(daily_series),
                 "daily_series": daily_series,
             }
@@ -153,6 +210,7 @@ def compute_scorecards(
             "workflow": workflow,
             "repo": repo,
             "total_runs": total_runs,
+            "trend_days": days,
             "window_start": all_dates[0],
             "window_end": all_dates[-1],
             "generated": datetime.now(timezone.utc).isoformat(),

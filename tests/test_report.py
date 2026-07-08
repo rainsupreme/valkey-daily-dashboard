@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from valkey_oncall.cache import Cache
-from valkey_oncall.report import generate_report_data
+from valkey_oncall.report import generate_report_data, render_html
 
 
 @pytest.fixture
@@ -89,3 +89,23 @@ class TestScorecardWiring:
         data = generate_report_data(cache, days=14)
         roster = {s["test_name"] for s in data["scorecard"]["scorecards"]}
         assert "pid:99999" not in roster
+
+
+class TestTabLayout:
+    def test_render_has_tabs_and_panels(self, cache):
+        _store_failure(cache, 100, 200, _day(2), "recent in tests/unit/b.tcl")
+        html = render_html(generate_report_data(cache, days=14))
+
+        # Three tab buttons.
+        for attr in (
+            'data-tab="heatmap"',
+            'data-tab="scorecard"',
+            'data-tab="rundetails"',
+        ):
+            assert attr in html
+        # Three panels, and the heatmap is active by default.
+        for pid in ('id="tab-heatmap"', 'id="tab-scorecard"', 'id="tab-rundetails"'):
+            assert pid in html
+        assert 'class="tab-panel active" id="tab-heatmap"' in html
+        # Exactly three panels (balanced open/close with the three sections).
+        assert html.count('class="tab-panel') == 3

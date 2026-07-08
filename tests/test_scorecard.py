@@ -21,19 +21,24 @@ _BASE = datetime.now(timezone.utc) - timedelta(days=15)
 
 
 class TestClassify:
-    def test_persistent(self):
-        assert _classify(0.5) == "persistent"  # boundary
-        assert _classify(0.8) == "persistent"
-        assert _classify(1.0) == "persistent"
+    def test_persistent_by_rate(self):
+        assert _classify(5, 10) == "persistent"  # 50% boundary
+        assert _classify(8, 10) == "persistent"
+        assert _classify(10, 10) == "persistent"
+
+    def test_persistent_by_recent_streak(self):
+        # Low all-history rate, but broken every run for the last week.
+        assert _classify(7, 100, recent_streak=7) == "persistent"
+        assert _classify(10, 300, recent_streak=9) == "persistent"
 
     def test_flaky(self):
-        assert _classify(0.01) == "flaky"  # 100-run-bar boundary
-        assert _classify(0.1) == "flaky"
-        assert _classify(0.49) == "flaky"
+        assert _classify(5, 100) == "flaky"  # 5%, multiple days, short streak
+        assert _classify(2, 50, recent_streak=1) == "flaky"
 
-    def test_rare(self):
-        assert _classify(0.009) == "rare"
-        assert _classify(0.0) == "rare"
+    def test_rare_one_off(self):
+        assert _classify(1, 90) == "rare"  # single one-off failure
+        assert _classify(1, 300) == "rare"
+        assert _classify(0, 90) == "rare"
 
 
 class TestTrend:
@@ -56,23 +61,43 @@ class TestTrend:
 
 
 class TestExtractCategory:
-    def test_unit(self):
-        assert _extract_category("some test in tests/unit/foo.tcl") == "unit"
+    def test_tcl_unit_dir_is_integration(self):
+        # tcl tests under tests/unit still boot a server -> integration.
+        assert _extract_category("some test in tests/unit/foo.tcl") == "integration"
+
+    def test_tcl_unit_type_is_integration(self):
+        assert _extract_category("t in tests/unit/type/list.tcl") == "integration"
+
+    def test_tcl_integration_dir(self):
+        assert (
+            _extract_category("t in tests/integration/replication.tcl") == "integration"
+        )
 
     def test_cluster(self):
         assert _extract_category("some test in tests/cluster/bar.tcl") == "cluster"
 
+    def test_cluster_nested_under_unit(self):
+        assert _extract_category("t in tests/unit/cluster/slot.tcl") == "cluster"
+
     def test_sentinel(self):
         assert _extract_category("some test in tests/sentinel/baz.tcl") == "sentinel"
 
-    def test_gtest(self):
+    def test_gtest_is_unit(self):
         assert _extract_category("GTest FAILED: SomeTest.Case") == "unit"
+
+    def test_src_path_is_unit(self):
+        assert _extract_category("test_foo in src/unit/test_ziplist.c") == "unit"
 
     def test_sentinel_keyword(self):
         assert _extract_category("Sentinel failover test") == "sentinel"
 
     def test_other(self):
         assert _extract_category("random test name") == "other"
+
+    def test_job_bucket_is_other(self):
+        assert _extract_category("test-sanitizer (gcc): unattributed failure") == (
+            "other"
+        )
 
 
 # --- Integration tests with real Cache ---
@@ -140,7 +165,7 @@ class TestComputeScorecards:
 
         sc = result["scorecards"][0]
         assert sc["test_name"] == "flaky test in tests/unit/foo.tcl"
-        assert sc["category"] == "unit"
+        assert sc["category"] == "integration"
         assert sc["days_failed"] == 3
         assert sc["total_hits"] == 3
         assert sc["total_runs"] == 5
