@@ -64,6 +64,20 @@ def _make_job(job_id, run_id, conclusion="failure"):
     }
 
 
+def _store(cache, rid, off, fail_test=None):
+    """Store one CI day; fails `fail_test` if given, else a clean run."""
+    status = "failure" if fail_test else "success"
+    cache.store_runs([_make_run(rid, _day(off), status, f"s{rid}")])
+    if fail_test:
+        cache.store_jobs(rid, [_make_job(rid + 1000, rid)])
+        cache.store_failures(
+            rid + 1000,
+            [{"test_name": fail_test, "error_summary": "e", "log_lines": "x"}],
+        )
+    else:
+        cache.store_jobs(rid, [_make_job(rid + 1000, rid, "success")])
+
+
 class TestComputeBlame:
     def test_empty_cache(self, cache, mock_client):
         result = compute_blame(cache, mock_client, days=14)
@@ -123,6 +137,7 @@ class TestComputeBlame:
         result = compute_blame(cache, mock_client, days=30)
         assert len(result) == 1
         assert result[0]["last_pass_sha"] is None
+        assert result[0]["confidence"] == "unknown"
         assert "extend --days" in result[0]["note"]
         mock_client.compare_commits.assert_not_called()
 
@@ -189,41 +204,42 @@ class TestComputeBlame:
         assert result[0]["blame_commits"] == []
         assert result[0]["commit_count"] == 0
 
-    def test_confidence_high_for_durable_regression(self, cache, mock_client):
-        """A test that keeps failing after onset -> high confidence."""
-        # offset 0 = oldest (see _day/_BASE). Green first, then fails every run.
-        cache.store_runs([_make_run(100, _day(0), "success", "s0")])
-        cache.store_jobs(100, [_make_job(200, 100, "success")])
-        for rid, off in [(101, 1), (102, 2), (103, 3), (104, 4)]:
-            cache.store_runs([_make_run(rid, _day(off), "failure", f"s{rid}")])
-            cache.store_jobs(rid, [_make_job(rid + 100, rid)])
-            cache.store_failures(
-                rid + 100,
-                [{"test_name": "test_Y", "error_summary": "e", "log_lines": "x"}],
-            )
+    def test_confidence_high_for_novel_durable_regression(self, cache, mock_client):
+        """Clean history then durable failures -> high confidence, low p0_hat."""
+        rid = 100
+        for off in range(0, 15):  # 15 clean days
+            _store(cache, rid, off)
+            rid += 1
+        for off in range(15, 20):  # then fails every day (novel + durable)
+            _store(cache, rid, off, "novel_test")
+            rid += 1
 
-        result = compute_blame(cache, mock_client, days=30)
-        rec = next(r for r in result if r["test_name"] == "test_Y")
+        result = compute_blame(cache, mock_client, days=60)
+        rec = next(r for r in result if r["test_name"] == "novel_test")
         assert rec["post_onset_rate"] == 1.0
-        assert rec["confidence"] == "high"
+        assert rec["confidence"] == "high", rec
+        assert rec["p0_hat"] < 0.05
 
-    def test_confidence_low_for_one_off_flake(self, cache, mock_client):
-        """A test that fails once then passes -> low confidence (unreliable blame)."""
-        # offset 0 = oldest. Green, one failure, then three passing runs.
-        cache.store_runs([_make_run(100, _day(0), "success", "s0")])
-        cache.store_jobs(100, [_make_job(200, 100, "success")])
-        cache.store_runs([_make_run(101, _day(1), "failure", "s1")])
-        cache.store_jobs(101, [_make_job(201, 101)])
-        cache.store_failures(
-            201,
-            [{"test_name": "test_X", "error_summary": "e", "log_lines": "x"}],
-        )
-        for rid, off in [(102, 2), (103, 3), (104, 4)]:
-            cache.store_runs([_make_run(rid, _day(off), "success", f"s{rid}")])
-            cache.store_jobs(rid, [_make_job(rid + 100, rid, "success")])
+    def test_confidence_low_for_known_flake(self, cache, mock_client):
+        """A historically flaky test flagging again -> low confidence.
 
-        result = compute_blame(cache, mock_client, days=30)
-        rec = next(r for r in result if r["test_name"] == "test_X")
-        assert rec["post_onset_rate"] == 0.25  # 1 of 4 post-onset runs failed
-        assert rec["confidence"] == "low"
-        assert rec["last_pass_date"] == _day(0)
+        The windowed post_onset_rate is 1.0 (it fails on its only in-window
+        run), which the OLD logic would call 'high'. But the all-history
+        baseline knows this test is a ~30% flake, so the prior-aware
+        confidence correctly says 'low' -- the burst isn't surprising.
+        """
+        rid = 100
+        # Old flaky history OUTSIDE the 20-day detection window: fails ~1/3.
+        for i, off in enumerate(range(-40, -28)):  # 12 old days (~40-28d ago)
+            _store(cache, rid, off, "flaky_test" if i % 3 == 0 else None)
+            rid += 1
+        # Recent window: one green day, then a single blip.
+        _store(cache, rid, 0)
+        rid += 1
+        _store(cache, rid, 1, "flaky_test")
+
+        result = compute_blame(cache, mock_client, days=20)  # excludes old days
+        rec = next(r for r in result if r["test_name"] == "flaky_test")
+        assert rec["post_onset_rate"] == 1.0  # naive windowed rate says "durable"
+        assert rec["confidence"] == "low", rec  # ...but prior knows it's a flake
+        assert rec["p0_hat"] > 0.1
