@@ -55,21 +55,46 @@
     });
 })();
 
-// Tab switching (Heatmap / Scorecard / Run Details).
+// Tab switching (Heatmap / Scorecard / Run Details / Regressions).
+// The active tab is encoded in the URL hash (e.g. #regressions) so it is
+// deep-linkable and survives reload / back-forward navigation.
 (function () {
   var tabs = Array.prototype.slice.call(document.querySelectorAll(".tab"));
   if (!tabs.length) return;
   var panels = Array.prototype.slice.call(document.querySelectorAll(".tab-panel"));
+
+  function activate(name) {
+    var target = "tab-" + name;
+    if (!panels.some(function (p) { return p.id === target; })) return false;
+    tabs.forEach(function (t) {
+      t.classList.toggle("active", t.getAttribute("data-tab") === name);
+    });
+    panels.forEach(function (p) {
+      p.classList.toggle("active", p.id === target);
+    });
+    return true;
+  }
+
   tabs.forEach(function (tab) {
     tab.addEventListener("click", function () {
-      var target = "tab-" + tab.getAttribute("data-tab");
-      tabs.forEach(function (t) {
-        t.classList.remove("active");
-      });
-      panels.forEach(function (p) {
-        p.classList.toggle("active", p.id === target);
-      });
-      tab.classList.add("active");
+      var name = tab.getAttribute("data-tab");
+      activate(name);
+      // replaceState avoids spamming browser history on every tab click.
+      if (window.history && history.replaceState) {
+        history.replaceState(null, "", "#" + name);
+      } else {
+        location.hash = name;
+      }
     });
+  });
+
+  function fromHash() {
+    return (location.hash || "").replace(/^#/, "");
+  }
+  // Honor a deep link on load; fall back to the default (heatmap).
+  if (!activate(fromHash())) activate("heatmap");
+  // React to back/forward or manual hash edits.
+  window.addEventListener("hashchange", function () {
+    activate(fromHash());
   });
 })();

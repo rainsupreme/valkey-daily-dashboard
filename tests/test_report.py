@@ -225,6 +225,14 @@ class TestRegressions:
         assert "en.wikipedia.org/wiki/Beta-binomial_distribution" in reg
         assert "en.wikipedia.org/wiki/Bayesian_inference" in reg
         assert 'target="_blank"' in reg
+        assert ">Surprise<" in reg  # column renamed from Confidence
+
+    def test_active_tab_encoded_in_url_hash(self):
+        from valkey_oncall.report import _asset
+
+        js = _asset("report.js")
+        assert "hashchange" in js
+        assert "replaceState" in js or "location.hash" in js
 
     def test_ongoing_vs_fixed_split_and_surprise_pct(self, cache):
         from valkey_oncall.blame import REGRESSION_ONGOING_QUIET_RUNS as q

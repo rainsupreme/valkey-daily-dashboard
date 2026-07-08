@@ -790,7 +790,7 @@ def _render_fixed_regressions(
         f"{REGRESSION_ONGOING_QUIET_RUNS}+ runs</summary>"
         '<table class="scorecard-table">'
         "<thead><tr><th>Test</th><th>First failed</th><th>Last passed</th>"
-        "<th>Suspect range</th><th>Baseline</th><th>Confidence</th>"
+        "<th>Suspect range</th><th>Baseline</th><th>Surprise</th>"
         "<th>Post-onset</th></tr></thead>"
         f"<tbody>{rows}</tbody></table></details>"
     )
@@ -889,7 +889,7 @@ ${styles}
 <div class="section">
   <h2>Regressions (blame)</h2>
   <p class="hint">Ongoing green→red transitions, newest first (likely-fixed ones collapse below). <b>Suspect range</b> links to the commits between the last green run and the first red run — the starting point for bisecting a regression.
-    <b>Baseline</b> is the test's learned historical fail rate. <b>Confidence</b> is a <i>surprise</i> score — how unusual the failures since onset are versus that baseline (100% − burst probability), <i>not</i> a literal probability of regression:
+    <b>Baseline</b> is the test's learned historical fail rate. <b>Surprise</b> is how unusual the failures since onset are versus that baseline (100% − burst probability), <i>not</i> a literal probability of regression:
     <span class="badge-persistent">≥99%</span> (e.g. a clean test breaking) ·
     <span class="badge-flaky">≥90%</span> ·
     <span class="badge-rare">lower</span> (plausibly just this test's usual flakiness) ·
@@ -897,15 +897,15 @@ ${styles}
     Post-onset = share of runs that failed since the transition. Hover a confidence badge for details.
   </p>
   <table class="scorecard-table">
-    <thead><tr><th>Test</th><th>First failed</th><th>Last passed</th><th>Suspect range</th><th title="learned baseline fail rate (posterior mean)">Baseline</th><th title="surprise vs baseline (100% − burst probability)">Confidence</th><th title="share of runs failed since onset">Post-onset</th></tr></thead>
+    <thead><tr><th>Test</th><th>First failed</th><th>Last passed</th><th>Suspect range</th><th title="learned baseline fail rate (posterior mean)">Baseline</th><th title="surprise vs baseline (100% − burst probability)">Surprise</th><th title="share of runs failed since onset">Post-onset</th></tr></thead>
     <tbody>${regressions_rows}</tbody>
   </table>
   ${fixed_regressions}
   <details class="methodology">
     <summary>How this works</summary>
     <div class="hint">
-      <p>Confidence is <a href="https://en.wikipedia.org/wiki/Bayesian_inference" target="_blank" rel="noopener noreferrer">Bayesian</a>, not a fixed threshold. Each test's baseline fail rate is modelled as a <a href="https://en.wikipedia.org/wiki/Beta_distribution" target="_blank" rel="noopener noreferrer">Beta distribution</a> learned from its full history — the <a href="https://en.wikipedia.org/wiki/Conjugate_prior" target="_blank" rel="noopener noreferrer">conjugate prior</a> for a pass/fail rate, seeded with a weak <a href="https://en.wikipedia.org/wiki/Jeffreys_prior" target="_blank" rel="noopener noreferrer">Jeffreys prior</a> so a test with little history isn't over-trusted.</p>
-      <p>The "burst probability" is how likely the failures <i>since onset</i> are under that baseline — the upper tail of the <a href="https://en.wikipedia.org/wiki/Beta-binomial_distribution" target="_blank" rel="noopener noreferrer">Beta-binomial</a> <a href="https://en.wikipedia.org/wiki/Posterior_predictive_distribution" target="_blank" rel="noopener noreferrer">posterior-predictive</a> distribution. The displayed <b>Confidence = 100% − burst probability</b>: a <i>surprise</i> score meaning "more extreme than X% of what this test's normal flakiness would produce". It is <b>not</b> P(regression) — that would be the <a href="https://en.wikipedia.org/wiki/Misuse_of_p-values" target="_blank" rel="noopener noreferrer">transposed-conditional fallacy</a> (it answers <i>P(data | no&nbsp;regression)</i>, not the reverse).</p>
+      <p>The surprise score is <a href="https://en.wikipedia.org/wiki/Bayesian_inference" target="_blank" rel="noopener noreferrer">Bayesian</a>, not a fixed threshold. Each test's baseline fail rate is modelled as a <a href="https://en.wikipedia.org/wiki/Beta_distribution" target="_blank" rel="noopener noreferrer">Beta distribution</a> learned from its full history — the <a href="https://en.wikipedia.org/wiki/Conjugate_prior" target="_blank" rel="noopener noreferrer">conjugate prior</a> for a pass/fail rate, seeded with a weak <a href="https://en.wikipedia.org/wiki/Jeffreys_prior" target="_blank" rel="noopener noreferrer">Jeffreys prior</a> so a test with little history isn't over-trusted.</p>
+      <p>The "burst probability" is how likely the failures <i>since onset</i> are under that baseline — the upper tail of the <a href="https://en.wikipedia.org/wiki/Beta-binomial_distribution" target="_blank" rel="noopener noreferrer">Beta-binomial</a> <a href="https://en.wikipedia.org/wiki/Posterior_predictive_distribution" target="_blank" rel="noopener noreferrer">posterior-predictive</a> distribution. The displayed <b>Surprise = 100% − burst probability</b>, meaning "more extreme than X% of what this test's normal flakiness would produce". It is <b>not</b> P(regression) — that would be the <a href="https://en.wikipedia.org/wiki/Misuse_of_p-values" target="_blank" rel="noopener noreferrer">transposed-conditional fallacy</a> (it answers <i>P(data | no&nbsp;regression)</i>, not the reverse).</p>
       <p>Why it adapts per test: a historically clean test is damning after a single fresh failure, while a chronically flaky test needs a much larger burst before it looks surprising. A regression whose test then stays quiet for 14+ runs is treated as likely fixed and collapses into the sub-list above.</p>
     </div>
   </details>
