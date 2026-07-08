@@ -685,9 +685,15 @@ def _render_regression_rows(records: List[Dict], repo: str = "valkey-io/valkey")
     """
     if not records:
         return (
-            '<tr><td colspan="6" class="no-commits">'
+            '<tr><td colspan="7" class="no-commits">'
             "No green→red regressions detected in the window.</td></tr>"
         )
+    conf_badge = {
+        "high": "badge-persistent",
+        "medium": "badge-flaky",
+        "low": "badge-rare",
+        "unknown": "badge-rare",
+    }
     rows = ""
     for r in records:
         name = sanitize_cached_failure(r.get("test_name", ""))
@@ -696,8 +702,10 @@ def _render_regression_rows(records: List[Dict], repo: str = "valkey-io/valkey")
         short = _short_test_name(name)
         reg = r.get("regression_date", "")
         last_pass = r.get("last_pass_date", "—")
-        conf = r.get("confidence", "low")
+        conf = r.get("confidence", "unknown")
         rate = r.get("post_onset_rate", 0.0) * 100
+        p0 = r.get("p0_hat")
+        burst_p = r.get("burst_p")
         lp = r.get("last_pass_sha") or ""
         ff = r.get("first_fail_sha") or ""
         if lp and ff and lp != ff:
@@ -716,15 +724,24 @@ def _render_regression_rows(records: List[Dict], repo: str = "valkey-io/valkey")
             )
         else:
             suspect = '<span class="no-commits">—</span>'
-        conf_cls = "badge-persistent" if conf == "high" else "badge-rare"
+        p0_str = f"{p0 * 100:.2f}%" if p0 is not None else "—"
+        if burst_p is not None:
+            conf_title = (
+                f"burst probability {burst_p:.3g} under the learned baseline "
+                f"({p0_str}) · post-onset {rate:.0f}%"
+            )
+        else:
+            conf_title = "no clean pre-onset history to learn a baseline"
+        cls = conf_badge.get(conf, "badge-rare")
         rows += (
             f'<tr data-conf="{conf}">'
             f'<td class="test-name" title="{html.escape(name)}">{html.escape(short)}</td>'
             f'<td class="freq">{reg}</td>'
             f'<td class="freq">{last_pass}</td>'
             f"<td>{suspect}</td>"
-            f'<td><span class="{conf_cls}" '
-            f'title="post-onset failure rate {rate:.0f}%">{conf}</span></td>'
+            f'<td class="freq" title="learned baseline fail rate (posterior mean)">'
+            f"{p0_str}</td>"
+            f'<td><span class="{cls}" title="{html.escape(conf_title)}">{conf}</span></td>'
             f'<td class="freq">{rate:.0f}%</td>'
             f"</tr>"
         )
@@ -824,14 +841,25 @@ ${styles}
 <div class="section">
   <h2>Regressions (blame)</h2>
   <p class="hint">Detected green→red transitions, newest first. <b>Suspect range</b> links to the commits between the last green run and the first red run — the starting point for bisecting a regression.
-    <span class="badge-persistent">high</span> confidence = failed consistently since onset (blame reliable);
-    <span class="badge-rare">low</span> = intermittent, so the range is less trustworthy.
-    Post-onset = share of runs that failed since the transition.
+    <b>Baseline</b> is the test's learned historical fail rate; <b>Confidence</b> is how surprising the failures since onset are against that baseline:
+    <span class="badge-persistent">high</span> (e.g. a clean test breaking) ·
+    <span class="badge-flaky">medium</span> ·
+    <span class="badge-rare">low</span> (plausibly just this test's usual flakiness) ·
+    <span class="badge-rare">unknown</span> (no clean pre-onset history).
+    Post-onset = share of runs that failed since the transition. Hover a confidence badge for the burst probability.
   </p>
   <table class="scorecard-table">
-    <thead><tr><th>Test</th><th>First failed</th><th>Last passed</th><th>Suspect range</th><th>Confidence</th><th title="share of runs failed since onset">Post-onset</th></tr></thead>
+    <thead><tr><th>Test</th><th>First failed</th><th>Last passed</th><th>Suspect range</th><th title="learned baseline fail rate (posterior mean)">Baseline</th><th>Confidence</th><th title="share of runs failed since onset">Post-onset</th></tr></thead>
     <tbody>${regressions_rows}</tbody>
   </table>
+  <details class="methodology">
+    <summary>How this works</summary>
+    <div class="hint">
+      <p>Confidence is <a href="https://en.wikipedia.org/wiki/Bayesian_inference" target="_blank" rel="noopener noreferrer">Bayesian</a>, not a fixed threshold. Each test's baseline fail rate is modelled as a <a href="https://en.wikipedia.org/wiki/Beta_distribution" target="_blank" rel="noopener noreferrer">Beta distribution</a> learned from its full history — the <a href="https://en.wikipedia.org/wiki/Conjugate_prior" target="_blank" rel="noopener noreferrer">conjugate prior</a> for a pass/fail rate, seeded with a weak <a href="https://en.wikipedia.org/wiki/Jeffreys_prior" target="_blank" rel="noopener noreferrer">Jeffreys prior</a> so a test with little history isn't over-trusted.</p>
+      <p>We then ask how surprising the failures <i>since onset</i> are under that baseline: the upper tail of the <a href="https://en.wikipedia.org/wiki/Beta-binomial_distribution" target="_blank" rel="noopener noreferrer">Beta-binomial</a> <a href="https://en.wikipedia.org/wiki/Posterior_predictive_distribution" target="_blank" rel="noopener noreferrer">posterior-predictive</a> distribution — the "burst probability" shown when you hover a confidence badge. A tiny probability means the burst is very unlikely to be the test's usual flakiness, so confidence it's a real regression is high.</p>
+      <p>Why it adapts per test: a historically clean test is damning after a single fresh failure, while a chronically flaky test needs a much larger burst before we believe it regressed. The threshold moves with each test's own history instead of a one-size-fits-all rate.</p>
+    </div>
+  </details>
 </div>
 </div>
 

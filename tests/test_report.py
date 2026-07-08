@@ -207,8 +207,24 @@ class TestRegressions:
         # Permission-free compare link between last-green and first-red SHAs.
         assert "compare/aaaaaaa1111...sha501" in reg
         assert "flap in tests/unit/x.tcl" in reg
-        # High confidence (failed every run since onset).
-        assert "high" in reg
+        # A confidence badge (data-conf) is rendered for the regression row,
+        # and the record carries the prior-aware fields.
+        assert "data-conf=" in reg
+        rec = next(r for r in data["regressions"] if r["test_name"].startswith("flap"))
+        assert rec["confidence"] in ("high", "medium", "low", "unknown")
+        assert "p0_hat" in rec and "burst_p" in rec
+
+    def test_methodology_note_present(self, cache):
+        self._green_run(cache, 500, 600, _day(3), "aaaaaaa1111")
+        _store_failure(cache, 501, 601, _day(2), "flap in tests/unit/x.tcl")
+        reg = render_html(generate_report_data(cache, days=14))
+        reg = reg[reg.index('id="tab-regressions"') :]
+        assert "How this works" in reg
+        assert ">Baseline<" in reg  # column header
+        # Wikipedia references for the math, opening in a new tab.
+        assert "en.wikipedia.org/wiki/Beta-binomial_distribution" in reg
+        assert "en.wikipedia.org/wiki/Bayesian_inference" in reg
+        assert 'target="_blank"' in reg
 
     def test_run_detail_has_compare_link_without_client(self, cache):
         # Two consecutive failing runs with different SHAs -> compare link.
