@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List
 
 from valkey_oncall.cache import Cache
 from valkey_oncall.github_client import GitHubActionsClient
+from valkey_oncall.stats import regression_confidence
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +59,38 @@ def compute_blame(
                 failing.add(f["test_name"])
         run_failures.append({"run": run, "failing_tests": failing})
 
+    # All-history per-test failing dates, for the prior-aware confidence
+    # baseline: a test's flakiness BEFORE onset (not just within the detection
+    # window). The windowed pre-onset is trivially clean -- onset IS the first
+    # in-window failure -- so a known flake would look novel without this.
+    all_runs = cache.query_runs(repo=repo, workflow=workflow, branch=branch)
+    hist_seen: set = set()
+    hist_valid: List[Dict] = []
+    for r in sorted(all_runs, key=lambda x: x["run_date"]):
+        if r["status"] in ("in_progress", "queued", "skipped"):
+            continue
+        dk = r["run_date"][:10]
+        if dk in hist_seen:
+            continue
+        hist_seen.add(dk)
+        hist_valid.append(r)
+    all_dates = sorted(hist_seen)
+    hist_fail_dates: Dict[str, set] = defaultdict(set)
+    for run in hist_valid:
+        dk = run["run_date"][:10]
+        for job in cache.query_jobs(run["run_id"], failed_only=True):
+            for f in cache.query_failures(job_id=job["job_id"]):
+                hist_fail_dates[f["test_name"]].add(dk)
+
+    def _confidence(test_name: str, onset: str):
+        """Prior-aware confidence from all-history counts around onset."""
+        fdates = hist_fail_dates.get(test_name, set())
+        pre_total = sum(1 for d in all_dates if d < onset)
+        post_total = sum(1 for d in all_dates if d >= onset)
+        pre_fails = sum(1 for d in fdates if d < onset)
+        post_fails = sum(1 for d in fdates if d >= onset)
+        return regression_confidence(pre_fails, pre_total, post_fails, post_total)
+
     # For each test, find the first appearance (green→red transition)
     # A transition is: test NOT in run[i-1] failures, but IS in run[i] failures
     all_tests = set()
@@ -82,7 +116,6 @@ def compute_blame(
         post_runs = run_failures[first_fail_idx:]
         post_fails = sum(1 for rf in post_runs if test_name in rf["failing_tests"])
         post_onset_rate = round(post_fails / len(post_runs), 4)
-        confidence = "high" if post_onset_rate >= 0.5 else "low"
 
         # The "last green" is the run immediately before first_fail_idx
         if first_fail_idx == 0:
@@ -95,7 +128,9 @@ def compute_blame(
                     "last_pass_sha": None,
                     "blame_commits": [],
                     "post_onset_rate": post_onset_rate,
-                    "confidence": confidence,
+                    "confidence": "unknown",
+                    "burst_p": None,
+                    "p0_hat": None,
                     "note": "Already failing at start of window — extend --days for full history",
                 }
             )
@@ -120,6 +155,9 @@ def compute_blame(
                     exc,
                 )
 
+        conf_label, burst_p, p0_hat = _confidence(
+            test_name, first_fail["run_date"][:10]
+        )
         blame_records.append(
             {
                 "test_name": test_name,
@@ -130,7 +168,9 @@ def compute_blame(
                 "blame_commits": commits,
                 "commit_count": len(commits),
                 "post_onset_rate": post_onset_rate,
-                "confidence": confidence,
+                "confidence": conf_label,
+                "burst_p": burst_p,
+                "p0_hat": p0_hat,
             }
         )
 
