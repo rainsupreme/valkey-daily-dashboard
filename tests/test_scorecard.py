@@ -7,6 +7,7 @@ import pytest
 
 from valkey_oncall.cache import Cache
 from valkey_oncall.scorecard import (
+    RESOLVED_QUIET_RUNS,
     _classify,
     _extract_category,
     _trend,
@@ -257,6 +258,54 @@ class TestComputeScorecards:
         sc = result["scorecards"][0]
         assert sc["first_seen"] == (base + timedelta(days=1)).strftime("%Y-%m-%d")
         assert sc["last_seen"] == (base + timedelta(days=3)).strftime("%Y-%m-%d")
+
+    def test_resolved_after_quiet_period(self, cache):
+        # Fails once, then stays quiet for well over the resolved threshold.
+        n = RESOLVED_QUIET_RUNS + 3
+        base = datetime.now(timezone.utc) - timedelta(days=n)
+        for i in range(n):
+            date = (base + timedelta(days=i)).strftime("%Y-%m-%d")
+            cache.store_runs([_make_run(100 + i, date)])
+            cache.store_jobs(100 + i, [_make_job(200 + i, 100 + i)])
+            if i == 0:
+                cache.store_failures(
+                    200 + i,
+                    [
+                        {
+                            "test_name": "old in tests/unit/a.tcl",
+                            "error_summary": "err",
+                            "log_lines": "x",
+                        }
+                    ],
+                )
+
+        sc = compute_scorecards(cache, days=90)["scorecards"][0]
+        assert sc["days_failed"] == 1
+        assert sc["runs_since_last_fail"] == n - 1
+        assert sc["resolved"] is True
+
+    def test_active_when_failed_recently(self, cache):
+        # Fails on the most recent run -> zero quiet runs -> not resolved.
+        base = _BASE
+        for i in range(5):
+            date = (base + timedelta(days=i)).strftime("%Y-%m-%d")
+            cache.store_runs([_make_run(100 + i, date)])
+            cache.store_jobs(100 + i, [_make_job(200 + i, 100 + i)])
+            if i == 4:
+                cache.store_failures(
+                    200 + i,
+                    [
+                        {
+                            "test_name": "fresh in tests/unit/a.tcl",
+                            "error_summary": "err",
+                            "log_lines": "x",
+                        }
+                    ],
+                )
+
+        sc = compute_scorecards(cache, days=90)["scorecards"][0]
+        assert sc["runs_since_last_fail"] == 0
+        assert sc["resolved"] is False
 
     def test_json_serializable(self, cache):
         """Ensure the output is fully JSON-serializable."""

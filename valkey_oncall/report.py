@@ -12,7 +12,7 @@ from typing import Dict, List
 
 from valkey_oncall.cache import Cache
 from valkey_oncall.log_parser import sanitize_cached_failure
-from valkey_oncall.scorecard import compute_scorecards
+from valkey_oncall.scorecard import RESOLVED_QUIET_RUNS, compute_scorecards
 
 _ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 
@@ -310,9 +310,11 @@ def render_html(data: Dict) -> str:
             <td class="commits-cell">{commits_html}</td>
         </tr>"""
 
-    scorecard_rows = _render_scorecard_rows(
-        data.get("scorecard", {}).get("scorecards", [])
-    )
+    all_scorecards = data.get("scorecard", {}).get("scorecards", [])
+    active = [s for s in all_scorecards if not s.get("resolved")]
+    resolved = [s for s in all_scorecards if s.get("resolved")]
+    scorecard_rows = _render_scorecard_rows(active)
+    resolved_section = _render_resolved_section(resolved)
 
     return Template(_HTML_TEMPLATE).substitute(
         styles=_asset("report.css"),
@@ -330,6 +332,7 @@ def render_html(data: Dict) -> str:
         test_rows=test_rows,
         run_detail_rows=run_detail_rows,
         scorecard_rows=scorecard_rows,
+        resolved_section=resolved_section,
         report_json=html.escape(json.dumps(data, indent=2)),
     )
 
@@ -606,6 +609,26 @@ def _render_scorecard_rows(scorecards: List[Dict]) -> str:
     return rows
 
 
+def _render_resolved_section(resolved: List[Dict]) -> str:
+    """Render presumed-fixed tests as a collapsed <details> sub-list.
+
+    Returns "" when nothing is resolved, so the block is omitted entirely.
+    """
+    if not resolved:
+        return ""
+    rows = _render_scorecard_rows(resolved)
+    return (
+        '<details class="resolved-block">'
+        f"<summary>Resolved / quiet ({len(resolved)}) — no failure in the "
+        f"last {RESOLVED_QUIET_RUNS}+ runs</summary>"
+        '<table class="scorecard-table">'
+        "<thead><tr><th>#</th><th>Test</th><th>Class</th><th>Trend</th>"
+        '<th>Category</th><th title="Share of all recorded CI days the test '
+        'failed">Rate</th><th>Days</th><th>Recent activity</th></tr></thead>'
+        f"<tbody>{rows}</tbody></table></details>"
+    )
+
+
 _HTML_TEMPLATE = """\
 <!DOCTYPE html>
 <html lang="en">
@@ -661,7 +684,7 @@ ${styles}
     <span class="badge-flaky">flaky</span> = recurring / intermittent ·
     <span class="badge-rare">rare</span> = a single one-off failure.
     Trend: <span class="trend-up">↑</span> worse / <span class="trend-down">↓</span> better / <span class="trend-flat">→</span> flat (recent window).
-    Greyed rows are <b>stale</b> (no failure in the recent window). The activity sparkline shows per-day failure counts over the recent window.
+    Greyed rows are cooling off (no failure in the last 7+ runs); tests quiet for 30+ runs drop to the collapsed <b>Resolved</b> sub-list below. The activity sparkline shows per-day failure counts over the recent window.
   </p>
   <div id="scorecard-controls">
     <label>Class:
@@ -679,6 +702,7 @@ ${styles}
     <thead><tr><th>#</th><th>Test</th><th>Class</th><th>Trend</th><th>Category</th><th title="Share of all recorded CI days the test failed">Rate</th><th>Days</th><th title="Per-day failures over the recent window">Recent activity</th></tr></thead>
     <tbody id="scorecard-body">${scorecard_rows}</tbody>
   </table>
+  ${resolved_section}
 </div>
 </div>
 
