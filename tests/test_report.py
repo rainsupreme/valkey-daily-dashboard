@@ -109,3 +109,50 @@ class TestTabLayout:
         assert 'class="tab-panel active" id="tab-heatmap"' in html
         # Exactly three panels (balanced open/close with the three sections).
         assert html.count('class="tab-panel') == 3
+
+
+class TestResolvedSubList:
+    def test_resolved_test_goes_to_collapsed_block(self, cache):
+        from valkey_oncall.scorecard import RESOLVED_QUIET_RUNS
+
+        n = RESOLVED_QUIET_RUNS + 3
+        # An old test that failed once long ago (now resolved/quiet)...
+        for i in range(n):
+            date = (datetime.now(timezone.utc) - timedelta(days=n - i)).strftime(
+                "%Y-%m-%d"
+            )
+            cache.store_runs([_make_run(300 + i, date)])
+            cache.store_jobs(300 + i, [_make_job(400 + i, 300 + i)])
+            if i == 0:
+                cache.store_failures(
+                    400 + i,
+                    [
+                        {
+                            "test_name": "fixed in tests/unit/old.tcl",
+                            "error_summary": "e",
+                            "log_lines": "x",
+                        }
+                    ],
+                )
+        # ...and a fresh failure today (active).
+        _store_failure(cache, 100, 200, _day(0), "live in tests/unit/new.tcl")
+
+        html = render_html(generate_report_data(cache, days=90))
+
+        assert '<details class="resolved-block"' in html
+        assert "Resolved / quiet (1)" in html
+        block = html.index('<details class="resolved-block"')
+        body = html.index('id="scorecard-body"')
+        assert body < block
+        active_region = html[body:block]
+        resolved_region = html[block:]
+        # Active test is in the main scorecard body, not the resolved block.
+        assert "live in tests/unit/new.tcl" in active_region
+        assert "fixed in tests/unit/old.tcl" not in active_region
+        # The presumed-fixed test lives in the resolved block.
+        assert "fixed in tests/unit/old.tcl" in resolved_region
+
+    def test_no_resolved_block_when_all_active(self, cache):
+        _store_failure(cache, 100, 200, _day(1), "live in tests/unit/new.tcl")
+        html = render_html(generate_report_data(cache, days=90))
+        assert 'class="resolved-block"' not in html

@@ -14,6 +14,11 @@ from valkey_oncall.log_parser import sanitize_cached_failure
 # all-history rate is still low (e.g. a newly-broken test).
 PERSISTENT_STREAK_DAYS = 7
 
+# A test with no failure for this many consecutive clean runs (CI days) is
+# treated as presumed-fixed and moved to the collapsed "Resolved" sub-list.
+# It reappears in the active roster the moment it fails again.
+RESOLVED_QUIET_RUNS = 30
+
 
 def _recent_streak(daily_series: List[int]) -> int:
     """Count trailing consecutive days with >=1 failure (most-recent first)."""
@@ -118,7 +123,9 @@ def compute_scorecards(
     can never express a rate below 1/N. The trend, sparkline and the
     recent-streak that drives the "persistent" badge use the recent
     ``days``-day window, so the "getting worse lately" signal stays
-    recency-aware. ``stale`` marks tests with no failure in that window.
+    recency-aware. ``runs_since_last_fail`` counts clean runs since the last
+    failure; ``resolved`` (>= RESOLVED_QUIET_RUNS) flags presumed-fixed tests
+    for the collapsed sub-list, and ``stale`` greys cooling-off rows.
 
     Returns a dict with metadata and a list of test scorecards sorted by
     failure rate (descending).
@@ -180,7 +187,12 @@ def compute_scorecards(
         daily_series = [date_counts.get(d, 0) for d in recent_dates]
         streak = _recent_streak(daily_series)
         last_seen = test_last_seen[test_name]
-        stale = last_seen < recent_cutoff
+        # Clean CI runs (deduped days) since the test last failed. Because we
+        # only record failures, this "quiet run count" is our proxy for fixed.
+        runs_since_last_fail = sum(1 for d in all_dates if d > last_seen)
+        resolved = runs_since_last_fail >= RESOLVED_QUIET_RUNS
+        # "stale" (greyed) = cooling off: quiet for a week+ but not yet resolved.
+        stale = runs_since_last_fail >= 7
 
         scorecards.append(
             {
@@ -193,6 +205,8 @@ def compute_scorecards(
                 "total_runs": total_runs,
                 "failure_rate": failure_rate,
                 "recent_streak": streak,
+                "runs_since_last_fail": runs_since_last_fail,
+                "resolved": resolved,
                 "stale": stale,
                 "classification": _classify(days_failed, total_runs, streak),
                 "trend": _trend(daily_series),
