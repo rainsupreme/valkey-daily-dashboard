@@ -10,6 +10,7 @@ from pathlib import Path
 from string import Template
 from typing import Dict, List
 
+from valkey_oncall.blame import compute_blame
 from valkey_oncall.cache import Cache
 from valkey_oncall.log_parser import sanitize_cached_failure
 from valkey_oncall.scorecard import (
@@ -128,6 +129,11 @@ def generate_report_data(
 
     dates = [r["date"] for r in run_details]
 
+    # Record each run's previous SHA so the report can render a GitHub compare
+    # link (needs no API/token) even when commit lists aren't fetched.
+    for i in range(1, len(run_details)):
+        run_details[i]["prev_sha"] = run_details[i - 1]["commit_sha"]
+
     # Fetch commits between consecutive runs if a client is provided
     if client:
         for i in range(1, len(run_details)):
@@ -208,6 +214,12 @@ def generate_report_data(
         "scorecard": compute_scorecards(
             cache, days=90, branch=branch, workflow=workflow, repo=repo
         ),
+        # Detected green->red regressions (blame). compute_blame is client-safe:
+        # without commit-API access, blame_commits is empty but the transition
+        # SHAs remain, which is all the compare-link view needs.
+        "regressions": compute_blame(
+            cache, client, days=90, branch=branch, workflow=workflow, repo=repo
+        ),
     }
 
 
@@ -286,7 +298,18 @@ def render_html(data: Dict) -> str:
         commit_msg = run.get("commit_message", "") or ""
         sha_link = _commit_link(sha, repo, title=commit_msg) if sha else "—"
 
-        # Commits since previous run
+        # Commits since previous run. The compare LINK needs no API/token —
+        # it just points the browser at GitHub's diff between the two SHAs.
+        prev_sha = run.get("prev_sha", "")
+        compare_link = ""
+        if prev_sha and sha and prev_sha != sha:
+            compare_link = (
+                f'<a class="job-link" '
+                f'href="https://github.com/{repo}/compare/{prev_sha}...{sha}" '
+                f'target="_blank" rel="noopener noreferrer" '
+                f'title="commits between the previous run and this one">'
+                f"{prev_sha[:7]}…{sha[:7]} ↗</a>"
+            )
         commits = run.get("commits_since_prev", [])
         if commits:
             commits_html = '<div class="commit-list">'
@@ -301,7 +324,11 @@ def render_html(data: Dict) -> str:
                     f'<span class="commit-author">{author}</span> '
                     f'<span title="{msg_tip}">{msg_short}</span></div>'
                 )
+            if compare_link:
+                commits_html += f'<div class="commit-entry">{compare_link}</div>'
             commits_html += "</div>"
+        elif compare_link:
+            commits_html = f'<div class="commit-list">{compare_link}</div>'
         else:
             commits_html = '<span class="no-commits">—</span>'
 
@@ -320,6 +347,7 @@ def render_html(data: Dict) -> str:
     resolved = [s for s in all_scorecards if s.get("resolved")]
     scorecard_rows = _render_scorecard_rows(active)
     resolved_section = _render_resolved_section(resolved)
+    regressions_rows = _render_regression_rows(data.get("regressions", []), repo)
 
     return Template(_HTML_TEMPLATE).substitute(
         styles=_asset("report.css"),
@@ -338,6 +366,7 @@ def render_html(data: Dict) -> str:
         run_detail_rows=run_detail_rows,
         scorecard_rows=scorecard_rows,
         resolved_section=resolved_section,
+        regressions_rows=regressions_rows,
         persistent_streak=PERSISTENT_STREAK_DAYS,
         cooling_runs=COOLING_QUIET_RUNS,
         resolved_runs=RESOLVED_QUIET_RUNS,
@@ -637,6 +666,61 @@ def _render_resolved_section(resolved: List[Dict]) -> str:
     )
 
 
+def _render_regression_rows(records: List[Dict], repo: str = "valkey-io/valkey") -> str:
+    """Render detected green->red regressions (blame), newest first.
+
+    The "suspect range" is a GitHub compare link between the last green and
+    the first red run -- the exact commit range to bisect. It needs no API
+    or token; it just points the browser at GitHub's diff view.
+    """
+    if not records:
+        return (
+            '<tr><td colspan="6" class="no-commits">'
+            "No green→red regressions detected in the window.</td></tr>"
+        )
+    rows = ""
+    for r in records:
+        name = sanitize_cached_failure(r.get("test_name", ""))
+        if name is None:
+            continue
+        short = _short_test_name(name)
+        reg = r.get("regression_date", "")
+        last_pass = r.get("last_pass_date", "—")
+        conf = r.get("confidence", "low")
+        rate = r.get("post_onset_rate", 0.0) * 100
+        lp = r.get("last_pass_sha") or ""
+        ff = r.get("first_fail_sha") or ""
+        if lp and ff and lp != ff:
+            suspect = (
+                f'<a class="job-link" '
+                f'href="https://github.com/{repo}/compare/{lp}...{ff}" '
+                f'target="_blank" rel="noopener noreferrer" '
+                f'title="commits between the last green and first red run">'
+                f"{lp[:7]}…{ff[:7]} ↗</a>"
+            )
+        elif ff:
+            suspect = (
+                f'<a class="job-link" href="https://github.com/{repo}/commit/{ff}" '
+                f'target="_blank" rel="noopener noreferrer">{ff[:7]} ↗</a> '
+                '<span class="no-commits">(already failing at window start)</span>'
+            )
+        else:
+            suspect = '<span class="no-commits">—</span>'
+        conf_cls = "badge-persistent" if conf == "high" else "badge-rare"
+        rows += (
+            f'<tr data-conf="{conf}">'
+            f'<td class="test-name" title="{html.escape(name)}">{html.escape(short)}</td>'
+            f'<td class="freq">{reg}</td>'
+            f'<td class="freq">{last_pass}</td>'
+            f"<td>{suspect}</td>"
+            f'<td><span class="{conf_cls}" '
+            f'title="post-onset failure rate {rate:.0f}%">{conf}</span></td>'
+            f'<td class="freq">{rate:.0f}%</td>'
+            f"</tr>"
+        )
+    return rows
+
+
 _HTML_TEMPLATE = """\
 <!DOCTYPE html>
 <html lang="en">
@@ -662,6 +746,7 @@ ${styles}
   <button class="tab active" data-tab="heatmap" role="tab">Heatmap</button>
   <button class="tab" data-tab="scorecard" role="tab">Scorecard</button>
   <button class="tab" data-tab="rundetails" role="tab">Run Details</button>
+  <button class="tab" data-tab="regressions" role="tab">Regressions</button>
 </div>
 
 <div class="tab-panel active" id="tab-heatmap" role="tabpanel">
@@ -721,6 +806,21 @@ ${styles}
   <table class="detail-table">
     <thead><tr><th>Date</th><th>Status</th><th>Commit</th><th>#</th><th>Unique Failures</th><th>Failed Jobs</th><th>Commits since prev run</th></tr></thead>
     <tbody>${run_detail_rows}</tbody>
+  </table>
+</div>
+</div>
+
+<div class="tab-panel" id="tab-regressions" role="tabpanel">
+<div class="section">
+  <h2>Regressions (blame)</h2>
+  <p class="hint">Detected green→red transitions, newest first. <b>Suspect range</b> links to the commits between the last green run and the first red run — the starting point for bisecting a regression.
+    <span class="badge-persistent">high</span> confidence = failed consistently since onset (blame reliable);
+    <span class="badge-rare">low</span> = intermittent, so the range is less trustworthy.
+    Post-onset = share of runs that failed since the transition.
+  </p>
+  <table class="scorecard-table">
+    <thead><tr><th>Test</th><th>First failed</th><th>Last passed</th><th>Suspect range</th><th>Confidence</th><th title="share of runs failed since onset">Post-onset</th></tr></thead>
+    <tbody>${regressions_rows}</tbody>
   </table>
 </div>
 </div>

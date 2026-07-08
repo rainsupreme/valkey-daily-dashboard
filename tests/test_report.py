@@ -96,19 +96,25 @@ class TestTabLayout:
         _store_failure(cache, 100, 200, _day(2), "recent in tests/unit/b.tcl")
         html = render_html(generate_report_data(cache, days=14))
 
-        # Three tab buttons.
+        # Four tab buttons.
         for attr in (
             'data-tab="heatmap"',
             'data-tab="scorecard"',
             'data-tab="rundetails"',
+            'data-tab="regressions"',
         ):
             assert attr in html
-        # Three panels, and the heatmap is active by default.
-        for pid in ('id="tab-heatmap"', 'id="tab-scorecard"', 'id="tab-rundetails"'):
+        # Four panels, and the heatmap is active by default.
+        for pid in (
+            'id="tab-heatmap"',
+            'id="tab-scorecard"',
+            'id="tab-rundetails"',
+            'id="tab-regressions"',
+        ):
             assert pid in html
         assert 'class="tab-panel active" id="tab-heatmap"' in html
-        # Exactly three panels (balanced open/close with the three sections).
-        assert html.count('class="tab-panel') == 3
+        # Exactly four panels (balanced open/close with the four sections).
+        assert html.count('class="tab-panel') == 4
 
 
 class TestResolvedSubList:
@@ -156,6 +162,61 @@ class TestResolvedSubList:
         _store_failure(cache, 100, 200, _day(1), "live in tests/unit/new.tcl")
         html = render_html(generate_report_data(cache, days=90))
         assert 'class="resolved-block"' not in html
+
+
+class TestRegressions:
+    def _green_run(self, cache, run_id, job_id, date, sha):
+        cache.store_runs(
+            [
+                {
+                    "run_id": run_id,
+                    "repo": "valkey-io/valkey",
+                    "workflow_file": "daily.yml",
+                    "status": "success",
+                    "branch": "unstable",
+                    "commit_sha": sha,
+                    "run_date": f"{date}T06:00:00Z",
+                }
+            ]
+        )
+        cache.store_jobs(
+            run_id,
+            [
+                {
+                    "job_id": job_id,
+                    "name": "j",
+                    "status": "completed",
+                    "conclusion": "success",
+                }
+            ],
+        )
+
+    def test_regression_detected_with_compare_link(self, cache):
+        # Green run (older), then a red run (newer) with a failing test.
+        self._green_run(cache, 500, 600, _day(3), "aaaaaaa1111")
+        _store_failure(
+            cache, 501, 601, _day(2), "flap in tests/unit/x.tcl"
+        )  # sha = sha501
+
+        data = generate_report_data(cache, days=14)
+        assert "regressions" in data
+        assert any(r["test_name"].startswith("flap") for r in data["regressions"])
+
+        html = render_html(data)
+        reg = html[html.index('id="tab-regressions"') :]
+        # Permission-free compare link between last-green and first-red SHAs.
+        assert "compare/aaaaaaa1111...sha501" in reg
+        assert "flap in tests/unit/x.tcl" in reg
+        # High confidence (failed every run since onset).
+        assert "high" in reg
+
+    def test_run_detail_has_compare_link_without_client(self, cache):
+        # Two consecutive failing runs with different SHAs -> compare link.
+        self._green_run(cache, 500, 600, _day(3), "aaaaaaa1111")
+        _store_failure(cache, 501, 601, _day(2), "flap in tests/unit/x.tcl")
+        html = render_html(generate_report_data(cache, days=14))
+        # No client passed, yet the Run Details column links the diff.
+        assert "compare/aaaaaaa1111...sha501" in html
 
     def test_legend_reflects_threshold_constants(self, cache):
         from valkey_oncall.scorecard import (
