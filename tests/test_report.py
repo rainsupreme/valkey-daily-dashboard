@@ -218,6 +218,23 @@ class TestRegressions:
         # No client passed, yet the Run Details column links the diff.
         assert "compare/aaaaaaa1111...sha501" in html
 
+    def test_commit_fetch_failure_is_logged(self, cache, caplog):
+        import logging
+
+        self._green_run(cache, 500, 600, _day(3), "aaaaaaa1111")
+        _store_failure(cache, 501, 601, _day(2), "flap in tests/unit/x.tcl")
+
+        class BoomClient:
+            def compare_commits(self, base, head):
+                raise RuntimeError("403 Forbidden")
+
+            def get_commit(self, sha):
+                raise RuntimeError("403 Forbidden")
+
+        with caplog.at_level(logging.WARNING):
+            generate_report_data(cache, client=BoomClient(), days=14)
+        assert any("compare_commits" in r.message for r in caplog.records)
+
     def test_legend_reflects_threshold_constants(self, cache):
         from valkey_oncall.scorecard import (
             COOLING_QUIET_RUNS,

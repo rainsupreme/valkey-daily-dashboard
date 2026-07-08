@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -21,6 +22,7 @@ from valkey_oncall.scorecard import (
 )
 
 _ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+logger = logging.getLogger(__name__)
 
 
 def _asset(name: str) -> str:
@@ -143,7 +145,14 @@ def generate_report_data(
                 try:
                     commits = client.compare_commits(prev_sha, curr_sha)
                     run_details[i]["commits_since_prev"] = commits
-                except Exception:
+                except Exception as exc:
+                    logger.warning(
+                        "compare_commits %s...%s failed (token may lack "
+                        "Contents:Read); commit list will be empty: %s",
+                        prev_sha[:7],
+                        curr_sha[:7],
+                        exc,
+                    )
                     run_details[i]["commits_since_prev"] = []
             else:
                 run_details[i]["commits_since_prev"] = []
@@ -156,7 +165,8 @@ def generate_report_data(
                 try:
                     info = client.get_commit(sha)
                     seen_shas[sha] = info.get("message_full", "")
-                except Exception:
+                except Exception as exc:
+                    logger.warning("get_commit %s failed: %s", sha[:7], exc)
                     seen_shas[sha] = ""
             run["commit_message"] = seen_shas.get(sha, "")
 
