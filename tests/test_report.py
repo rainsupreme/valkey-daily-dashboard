@@ -350,3 +350,103 @@ class TestLatestRunDate:
     def test_latest_run_date_none_when_empty(self, cache):
         data = generate_report_data(cache, days=14)
         assert data["summary"]["latest_run_date"] is None
+
+
+class TestRegressionWarnings:
+    """Feature A: heatmap ⚠️ marker for ongoing likely-regression rows."""
+
+    def test_gate_includes_ongoing_high_and_medium(self):
+        from valkey_oncall.report import _regression_warnings
+
+        regs = [
+            {"test_name": "a", "ongoing": True, "confidence": "high"},
+            {"test_name": "b", "ongoing": True, "confidence": "medium"},
+            {"test_name": "c", "ongoing": True, "confidence": "low"},
+            {"test_name": "d", "ongoing": False, "confidence": "high"},
+            {"test_name": "e", "ongoing": True, "confidence": "unknown"},
+        ]
+        warn = _regression_warnings(regs)
+        assert set(warn) == {"a", "b"}
+
+    def test_gate_empty(self):
+        from valkey_oncall.report import _regression_warnings
+
+        assert _regression_warnings([]) == {}
+
+    def test_marker_rendered_for_durable_regression(self, cache):
+        # ~10 clean days establish a baseline, then 4 consecutive failing runs
+        # produce a strong, ongoing regime change (high surprise).
+        tr = TestRegressions()
+        for i, off in enumerate(range(14, 4, -1)):
+            tr._green_run(cache, 700 + i, 800 + i, _day(off), f"sha7{i:02d}")
+        for i, off in enumerate([3, 2, 1, 0]):
+            _store_failure(
+                cache, 720 + i, 820 + i, _day(off), "regr in tests/unit/y.tcl"
+            )
+
+        data = generate_report_data(cache, days=14)
+        rec = next(r for r in data["regressions"] if r["test_name"].startswith("regr"))
+        assert rec["ongoing"] is True
+        assert rec["confidence"] in ("high", "medium")
+
+        html = render_html(data)
+        heatmap = html[
+            html.index('id="tab-heatmap"') : html.index('id="tab-scorecard"')
+        ]
+        # ⚠️ marker present in the heatmap, linking to the regressions tab.
+        assert 'class="regwarn"' in heatmap
+        assert 'href="#regressions"' in heatmap
+
+    def test_no_marker_when_no_regressions(self, cache):
+        # A one-off flake (single failing day) is not an ongoing regression.
+        _store_failure(cache, 900, 1000, _day(1), "oneoff in tests/unit/z.tcl")
+        data = generate_report_data(cache, days=14)
+        html = render_html(data)
+        heatmap = html[
+            html.index('id="tab-heatmap"') : html.index('id="tab-scorecard"')
+        ]
+        assert 'class="regwarn"' not in heatmap
+
+
+class TestSparklineOnset:
+    """Feature B: _sparkline draws an onset tick when mark_index is given."""
+
+    def test_mark_draws_amber_tick(self):
+        from valkey_oncall.report import _sparkline
+
+        assert "#d29922" in _sparkline([0, 0, 1, 1], mark_index=2)
+
+    def test_no_mark_no_tick(self):
+        from valkey_oncall.report import _sparkline
+
+        assert "#d29922" not in _sparkline([0, 0, 1, 1])
+
+    def test_out_of_range_mark_ignored(self):
+        from valkey_oncall.report import _sparkline
+
+        assert "#d29922" not in _sparkline([0, 1], mark_index=9)
+
+    def test_empty_series_empty_string(self):
+        from valkey_oncall.report import _sparkline
+
+        assert _sparkline([], mark_index=0) == ""
+
+
+class TestRegressionSparklineRender:
+    """Feature B: the Regressions tab renders an onset sparkline per row."""
+
+    def test_onset_column_and_spark_present(self, cache):
+        tr = TestRegressions()
+        for i, off in enumerate(range(14, 4, -1)):
+            tr._green_run(cache, 600 + i, 700 + i, _day(off), f"sha6{i:02d}")
+        for i, off in enumerate([3, 2, 1, 0]):
+            _store_failure(
+                cache, 620 + i, 720 + i, _day(off), "regr in tests/unit/w.tcl"
+            )
+
+        data = generate_report_data(cache, days=14)
+        html = render_html(data)
+        reg = html[html.index('id="tab-regressions"') :]
+        assert ">Onset<" in reg  # new column header
+        assert 'class="spark-cell"' in reg  # sparkline cell rendered
+        assert "#d29922" in reg  # onset tick drawn

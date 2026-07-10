@@ -284,6 +284,9 @@ def render_html(data: Dict) -> str:
     runs = data["runs"]
     repo = summary.get("repo", "valkey-io/valkey")
 
+    # Likely-regression lookup for heatmap warning markers (Feature A).
+    reg_warnings = _regression_warnings(data.get("regressions", []))
+
     # Build date headers — M/D format, no leading zeros
     date_headers = ""
     for d in dates:
@@ -322,8 +325,18 @@ def render_html(data: Dict) -> str:
                 tip = html.escape(f"{n}x on {d}\nJobs: {jobs}\nError: {errs}")
                 cells += f'<td class="cell fail" title="{tip}">{n}</td>'
 
+        warn = reg_warnings.get(test_name)
+        warn_marker = ""
+        if warn:
+            wtip = html.escape(
+                f"Likely ongoing regression — surprise "
+                f"{_surprise_str(warn.get('burst_p'))}, onset "
+                f"{warn.get('regression_date', '?')}. Click for details."
+            )
+            warn_marker = f'<a class="regwarn" href="#regressions" title="{wtip}">⚠️</a>'
+
         test_rows += f"""<tr>
-            <td class="test-name" title="{html.escape(test_name)}">{html.escape(short_name)}</td>
+            <td class="test-name" title="{html.escape(test_name)}">{warn_marker}{html.escape(short_name)}</td>
             <td class="freq">{freq}</td>
             <td class="freq" title="Failed {score_90d:.1f}% of runs in last 90 days">{score_str}</td>
             {cells}
@@ -635,8 +648,17 @@ def _render_failure_names(
     return f'<div class="failure-list">{items}</div>'
 
 
-def _sparkline(series: List[int], width: int = 90, height: int = 16) -> str:
-    """Render a per-day failure-count series as a compact inline SVG bar chart."""
+def _sparkline(
+    series: List[int],
+    width: int = 90,
+    height: int = 16,
+    mark_index: int | None = None,
+) -> str:
+    """Render a per-day failure-count series as a compact inline SVG bar chart.
+
+    If *mark_index* is given, a vertical tick is drawn at that bar to mark a
+    regime change (e.g. a regression's onset run).
+    """
     if not series:
         return ""
     n = len(series)
@@ -651,6 +673,12 @@ def _sparkline(series: List[int], width: int = 90, height: int = 16) -> str:
         bars.append(
             f'<rect x="{x}" y="{y}" width="{max(1, bar_w - 1)}" '
             f'height="{max(h, 1)}" fill="{color}"/>'
+        )
+    if mark_index is not None and 0 <= mark_index < n:
+        mx_x = mark_index * bar_w
+        bars.append(
+            f'<rect x="{max(0, mx_x - 1)}" y="0" width="2" height="{height}" '
+            f'fill="#d29922"><title>onset</title></rect>'
         )
     return (
         f'<svg class="spark" width="100%" height="{height}" '
@@ -742,6 +770,22 @@ def _surprise_str(burst_p) -> str:
     return f"{pct:.1f}%"
 
 
+def _regression_warnings(regressions: List[Dict]) -> Dict[str, Dict]:
+    """Map test_name -> record for ongoing, high/medium-surprise regressions.
+
+    Used to flag likely-regression rows in the heatmap with a ⚠️ so the
+    signal is visible without opening the Regressions tab. The gate reuses
+    the existing confidence tiers (burst_p <= CONF_MED_P == "high"/"medium")
+    rather than a new threshold, and requires the regression to be ongoing
+    (a likely-fixed regression is not worth flagging on the live heatmap).
+    """
+    return {
+        r["test_name"]: r
+        for r in regressions
+        if r.get("ongoing") and r.get("confidence") in ("high", "medium")
+    }
+
+
 def _render_regression_rows(records: List[Dict], repo: str = "valkey-io/valkey") -> str:
     """Render detected green->red regressions (blame), newest first.
 
@@ -751,7 +795,7 @@ def _render_regression_rows(records: List[Dict], repo: str = "valkey-io/valkey")
     """
     if not records:
         return (
-            '<tr><td colspan="7" class="no-commits">'
+            '<tr><td colspan="8" class="no-commits">'
             "No ongoing regressions detected. 🎉</td></tr>"
         )
     conf_badge = {
@@ -812,6 +856,9 @@ def _render_regression_rows(records: List[Dict], repo: str = "valkey-io/valkey")
             f"{p0_str}</td>"
             f'<td><span class="{cls}" title="{html.escape(conf_title)}">'
             f"{_surprise_str(burst_p)}</span></td>"
+            f'<td class="spark-cell">'
+            f"{_sparkline(r.get('daily_series', []), mark_index=r.get('onset_index'))}"
+            f"</td>"
             f'<td class="freq">{rate:.0f}%</td>'
             f"</tr>"
         )
@@ -835,7 +882,7 @@ def _render_fixed_regressions(
         '<table class="scorecard-table">'
         "<thead><tr><th>Test</th><th>First failed</th><th>Last passed</th>"
         "<th>Suspect range</th><th>Baseline</th><th>Surprise</th>"
-        "<th>Post-onset</th></tr></thead>"
+        "<th>Onset</th><th>Post-onset</th></tr></thead>"
         f"<tbody>{rows}</tbody></table></details>"
     )
 
@@ -941,7 +988,7 @@ ${styles}
     Post-onset = share of runs that failed since the transition. Hover a confidence badge for details.
   </p>
   <table class="scorecard-table">
-    <thead><tr><th>Test</th><th>First failed</th><th>Last passed</th><th>Suspect range</th><th title="learned baseline fail rate (posterior mean)">Baseline</th><th title="surprise vs baseline (100% − burst probability)">Surprise</th><th title="share of runs failed since onset">Post-onset</th></tr></thead>
+    <thead><tr><th>Test</th><th>First failed</th><th>Last passed</th><th>Suspect range</th><th title="learned baseline fail rate (posterior mean)">Baseline</th><th title="surprise vs baseline (100% − burst probability)">Surprise</th><th title="pass/fail across the window; amber tick marks the onset run">Onset</th><th title="share of runs failed since onset">Post-onset</th></tr></thead>
     <tbody>${regressions_rows}</tbody>
   </table>
   ${fixed_regressions}

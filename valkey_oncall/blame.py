@@ -131,6 +131,13 @@ def compute_blame(
         post_fails = sum(1 for rf in post_runs if test_name in rf["failing_tests"])
         post_onset_rate = round(post_fails / len(post_runs), 4)
 
+        # Chronological pass/fail series across the detection window (1 = failed
+        # that run), plus the index of the onset run. Powers the Regressions-tab
+        # sparkline with a marked regime-change point.
+        window_series = [
+            1 if test_name in rf["failing_tests"] else 0 for rf in run_failures
+        ]
+
         # The "last green" is the run immediately before first_fail_idx
         if first_fail_idx == 0:
             # Test was already failing at the start of our window — no transition visible
@@ -147,6 +154,8 @@ def compute_blame(
                     "p0_hat": None,
                     "runs_since_last_fail": _quiet_runs(test_name),
                     "ongoing": _quiet_runs(test_name) < REGRESSION_ONGOING_QUIET_RUNS,
+                    "daily_series": window_series,
+                    "onset_index": 0,
                     "note": "Already failing at start of window — extend --days for full history",
                 }
             )
@@ -190,6 +199,8 @@ def compute_blame(
                 "p0_hat": p0_hat,
                 "runs_since_last_fail": quiet,
                 "ongoing": quiet < REGRESSION_ONGOING_QUIET_RUNS,
+                "daily_series": window_series,
+                "onset_index": first_fail_idx,
             }
         )
 

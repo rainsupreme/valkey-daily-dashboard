@@ -84,3 +84,5 @@ pre { background: #161b22; padding: 12px; border-radius: 6px; overflow-x: auto;
 #scorecard-controls select, #scorecard-controls button { background:#161b22; color:#c9d1d9;
   border:1px solid #30363d; border-radius:4px; font-size: 0.6875rem; padding:2px 6px; margin:0 2px; cursor:pointer; }
 #scorecard-controls button:hover { background:#21262d; }
+
+.regwarn{text-decoration:none;margin-right:5px;cursor:pointer;font-size:0.85rem}
