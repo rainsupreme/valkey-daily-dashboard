@@ -476,3 +476,20 @@ class TestRegressionSparklineRender:
         assert ">Onset<" in reg  # new column header
         assert 'class="spark-cell"' in reg  # sparkline cell rendered
         assert "#d29922" in reg  # onset tick drawn
+
+
+class TestHeatmapMethodologyNote:
+    """The heatmap carries a methodology note explaining the ⚠️ gate."""
+
+    def test_note_and_links_present(self, cache):
+        _store_failure(cache, 900, 1000, _day(1), "x in tests/unit/z.tcl")
+        html = render_html(generate_report_data(cache, days=14))
+        heat = html[html.index('id="tab-heatmap"') : html.index('id="tab-scorecard"')]
+        assert "What the ⚠️ means" in heat
+        assert "en.wikipedia.org/wiki/Credible_interval" in heat
+        assert "en.wikipedia.org/wiki/Effect_size" in heat
+        assert "en.wikipedia.org/wiki/Beta_distribution" in heat
+        assert 'target="_blank"' in heat
+        # Injected gate constants (kept DRY via template vars).
+        assert "90% credible interval" in heat
+        assert "5%" in heat

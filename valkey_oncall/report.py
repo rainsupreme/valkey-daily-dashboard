@@ -451,6 +451,9 @@ def render_html(data: Dict) -> str:
         persistent_streak=PERSISTENT_STREAK_DAYS,
         cooling_runs=COOLING_QUIET_RUNS,
         resolved_runs=RESOLVED_QUIET_RUNS,
+        warn_ci=f"{HEATMAP_WARN_CI * 100:.0f}%",
+        warn_rate=f"{HEATMAP_WARN_MEANINGFUL_RATE * 100:.0f}%",
+        warn_min_fails=HEATMAP_WARN_MIN_FAILURES,
         report_json=html.escape(json.dumps(data, indent=2)),
     )
 
@@ -960,6 +963,13 @@ ${styles}
     ${test_rows}
   </tbody>
 </table>
+  <details class="methodology">
+    <summary>What the ⚠️ means</summary>
+    <div class="hint">
+      <p>A ⚠️ next to a test marks it as a <b>likely meaningful regression</b> — not merely a statistically surprising one. It asks <a href="https://en.wikipedia.org/wiki/Effect_size" target="_blank" rel="noopener noreferrer">"how much does it fail"</a> (effect size) rather than <a href="https://en.wikipedia.org/wiki/Statistical_significance" target="_blank" rel="noopener noreferrer">"how surprising is it"</a> (significance), so a single failure of a normally-clean test — which looks very surprising against a near-zero baseline — does <b>not</b> trip it.</p>
+      <p>We model the test's failure rate <i>since onset</i> as a <a href="https://en.wikipedia.org/wiki/Beta_distribution" target="_blank" rel="noopener noreferrer">Beta</a> posterior (the <a href="https://en.wikipedia.org/wiki/Conjugate_prior" target="_blank" rel="noopener noreferrer">conjugate prior</a> for a pass/fail rate, seeded with a weak <a href="https://en.wikipedia.org/wiki/Jeffreys_prior" target="_blank" rel="noopener noreferrer">Jeffreys prior</a>) and take the lower bound of its <a href="https://en.wikipedia.org/wiki/Credible_interval" target="_blank" rel="noopener noreferrer">${warn_ci} credible interval</a>. The ⚠️ appears only when that bound is at least <b>${warn_rate}</b> — i.e. we are ${warn_ci} confident the test now fails at least ${warn_rate} of runs — and it has failed at least <b>${warn_min_fails}</b> times. The credible interval naturally requires enough evidence: a tiny sample yields a wide posterior whose lower bound stays low, so weak signals don't flag until they earn it.</p>
+    </div>
+  </details>
 </div>
 
 <div class="tab-panel" id="tab-scorecard" role="tabpanel">
