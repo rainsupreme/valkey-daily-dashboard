@@ -284,6 +284,9 @@ def render_html(data: Dict) -> str:
     runs = data["runs"]
     repo = summary.get("repo", "valkey-io/valkey")
 
+    # Likely-regression lookup for heatmap warning markers (Feature A).
+    reg_warnings = _regression_warnings(data.get("regressions", []))
+
     # Build date headers — M/D format, no leading zeros
     date_headers = ""
     for d in dates:
@@ -322,8 +325,18 @@ def render_html(data: Dict) -> str:
                 tip = html.escape(f"{n}x on {d}\nJobs: {jobs}\nError: {errs}")
                 cells += f'<td class="cell fail" title="{tip}">{n}</td>'
 
+        warn = reg_warnings.get(test_name)
+        warn_marker = ""
+        if warn:
+            wtip = html.escape(
+                f"Likely ongoing regression — surprise "
+                f"{_surprise_str(warn.get('burst_p'))}, onset "
+                f"{warn.get('regression_date', '?')}. Click for details."
+            )
+            warn_marker = f'<a class="regwarn" href="#regressions" title="{wtip}">⚠️</a>'
+
         test_rows += f"""<tr>
-            <td class="test-name" title="{html.escape(test_name)}">{html.escape(short_name)}</td>
+            <td class="test-name" title="{html.escape(test_name)}">{warn_marker}{html.escape(short_name)}</td>
             <td class="freq">{freq}</td>
             <td class="freq" title="Failed {score_90d:.1f}% of runs in last 90 days">{score_str}</td>
             {cells}
@@ -740,6 +753,22 @@ def _surprise_str(burst_p) -> str:
     if pct >= 10:
         return f"{pct:.0f}%"
     return f"{pct:.1f}%"
+
+
+def _regression_warnings(regressions: List[Dict]) -> Dict[str, Dict]:
+    """Map test_name -> record for ongoing, high/medium-surprise regressions.
+
+    Used to flag likely-regression rows in the heatmap with a ⚠️ so the
+    signal is visible without opening the Regressions tab. The gate reuses
+    the existing confidence tiers (burst_p <= CONF_MED_P == "high"/"medium")
+    rather than a new threshold, and requires the regression to be ongoing
+    (a likely-fixed regression is not worth flagging on the live heatmap).
+    """
+    return {
+        r["test_name"]: r
+        for r in regressions
+        if r.get("ongoing") and r.get("confidence") in ("high", "medium")
+    }
 
 
 def _render_regression_rows(records: List[Dict], repo: str = "valkey-io/valkey") -> str:
