@@ -48,13 +48,14 @@ jobs:
           valkey-oncall blame --no-sync -o _site/blame.json
           # Export raw report data as JSON for machine consumption
           python3 -c "
-          from valkey_oncall.cache import Cache; from valkey_oncall.report import generate_report_data
+          from valkey_oncall.cache import Cache; from valkey_oncall.report import generate_report_data, stale_reason
           import json, sys; from pathlib import Path
           cache = Cache(str(Path('~/.valkey-oncall/cache.db').expanduser()))
           data = generate_report_data(cache, days=14, branch='unstable', workflow='daily.yml')
           Path('_site/report.json').write_text(json.dumps(data, indent=2))
-          if data['summary']['total_runs'] == 0:
-              print('ERROR: report has 0 runs — sync likely failed', file=sys.stderr)
+          reason = stale_reason(data['summary'].get('latest_run_date'))
+          if reason:
+              print(f'ERROR: report is stale — {reason}', file=sys.stderr)
               sys.exit(1)
           "
 

@@ -24,6 +24,46 @@ from valkey_oncall.scorecard import (
 _ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 logger = logging.getLogger(__name__)
 
+# Freshness guard: how many days the newest run may lag before the report is
+# considered stale. The daily dashboard normally sees a run from today or
+# yesterday, so a gap beyond this means the feed has stalled (dead token or
+# upstream CI stopped). Kept generous so a single skipped upstream night does
+# not false-alarm; an expired token is caught immediately by the sync's
+# auth_failed flag regardless of this threshold.
+MAX_RUN_AGE_DAYS = 2
+
+
+def stale_reason(
+    latest_run_date: str | None,
+    *,
+    now: datetime | None = None,
+    max_age_days: int = MAX_RUN_AGE_DAYS,
+) -> str | None:
+    """Return a human-readable reason if the report data is stale, else None.
+
+    *latest_run_date* is the ``YYYY-MM-DD`` date of the newest run in the
+    report (``summary['latest_run_date']``), or None when there are no runs.
+    A truthy return value means the caller should fail loudly (non-zero exit)
+    so a silent sync failure becomes visible instead of redeploying stale data.
+    """
+    if not latest_run_date:
+        return "report has no runs — sync likely failed (dead token or empty cache)"
+    now = now or datetime.now(timezone.utc)
+    try:
+        latest = datetime.strptime(latest_run_date[:10], "%Y-%m-%d").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError:
+        return f"unparseable latest_run_date: {latest_run_date!r}"
+    age_days = (now.date() - latest.date()).days
+    if age_days > max_age_days:
+        return (
+            f"newest run is {age_days} days old ({latest_run_date}); expected "
+            f"within {max_age_days} — sync likely stalled "
+            f"(dead token or upstream CI stopped)"
+        )
+    return None
+
 
 def _asset(name: str) -> str:
     """Read a bundled static asset (CSS/JS) shipped alongside this module."""
@@ -218,6 +258,9 @@ def generate_report_data(
             "total_runs": len(run_details),
             "failed_runs": sum(1 for r in run_details if r["status"] == "failure"),
             "unique_tests_failed": len(sorted_tests),
+            # Newest run date (YYYY-MM-DD) in the window, or None if empty.
+            # Consumed by stale_reason() to fail loudly on a stalled sync.
+            "latest_run_date": dates[-1] if dates else None,
         },
         # Full 90-day flakiness roster (the "board of shame"), independent of
         # the recent-window heatmap above. Ranked worst-first by compute_scorecards.

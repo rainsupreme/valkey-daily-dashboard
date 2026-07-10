@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from valkey_oncall.cache import Cache
-from valkey_oncall.report import generate_report_data, render_html
+from valkey_oncall.report import generate_report_data, render_html, stale_reason
 
 
 @pytest.fixture
@@ -299,3 +299,54 @@ class TestRegressions:
         assert f"last {PERSISTENT_STREAK_DAYS} runs straight" in html
         assert f"last {COOLING_QUIET_RUNS}+ runs" in html
         assert f"{RESOLVED_QUIET_RUNS}+ runs drop to" in html
+
+
+class TestStaleReason:
+    """Freshness guard: stale_reason() drives the workflow's fail-loud check."""
+
+    def test_none_when_fresh_today(self):
+        assert stale_reason(_day(0)) is None
+
+    def test_none_within_tolerance(self):
+        # 2 days old is within the default MAX_RUN_AGE_DAYS tolerance.
+        assert stale_reason(_day(2)) is None
+
+    def test_stale_when_too_old(self):
+        reason = stale_reason(_day(5))
+        assert reason is not None
+        assert "days old" in reason
+
+    def test_missing_date_is_stale(self):
+        reason = stale_reason(None)
+        assert reason is not None
+        assert "no runs" in reason
+
+    def test_unparseable_date_is_stale(self):
+        reason = stale_reason("not-a-date")
+        assert reason is not None
+        assert "unparseable" in reason
+
+    def test_custom_now_and_threshold(self):
+        now = datetime(2026, 7, 10, tzinfo=timezone.utc)
+        # 3 days old with a 1-day tolerance -> stale.
+        assert stale_reason("2026-07-07", now=now, max_age_days=1) is not None
+        # Same date with a 5-day tolerance -> fresh.
+        assert stale_reason("2026-07-07", now=now, max_age_days=5) is None
+
+
+class TestLatestRunDate:
+    """generate_report_data exposes the newest run date for the guard."""
+
+    def test_latest_run_date_is_newest(self, cache):
+        cache.store_runs(
+            [
+                _make_run(1, _day(3), status="success"),
+                _make_run(2, _day(1), status="success"),
+            ]
+        )
+        data = generate_report_data(cache, days=14)
+        assert data["summary"]["latest_run_date"] == _day(1)
+
+    def test_latest_run_date_none_when_empty(self, cache):
+        data = generate_report_data(cache, days=14)
+        assert data["summary"]["latest_run_date"] is None

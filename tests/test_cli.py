@@ -642,3 +642,25 @@ class TestCLIIntegration:
         assert result.exit_code == 1
         assert "GITHUB_TOKEN" in result.stderr
         assert "required" in result.stderr.lower()
+
+
+class TestSyncAuthFailureExit:
+    """The sync command exits non-zero when the token is dead (never silent)."""
+
+    def test_sync_exits_nonzero_on_auth_failure(self) -> None:
+        from valkey_oncall.github_client import GitHubAPIError
+
+        db_path = _fresh_db()
+        mock_client = MagicMock(repo="valkey-io/valkey")
+        mock_client.get_workflow_runs.side_effect = GitHubAPIError(
+            401, "Bad credentials"
+        )
+
+        runner = CliRunner(env={"GITHUB_TOKEN": "expired-token"})
+        with patch("valkey_oncall.cli._make_client", return_value=mock_client):
+            result = runner.invoke(
+                cli, ["--db", db_path, "sync", "--workflow", "daily"]
+            )
+
+        assert result.exit_code == 1, f"expected non-zero exit: {result.output}"
+        assert "authentication failed" in result.output.lower()

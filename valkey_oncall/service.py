@@ -8,7 +8,11 @@ from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional
 
 from valkey_oncall.cache import Cache
-from valkey_oncall.github_client import GitHubActionsClient
+from valkey_oncall.github_client import (
+    GitHubActionsClient,
+    GitHubAPIError,
+    RateLimitError,
+)
 from valkey_oncall.log_parser import parse_job_log
 
 # Type alias for the optional progress callback
@@ -274,6 +278,10 @@ class OnCallService:
             "new_logs_fetched": 0,
             "new_failures_parsed": 0,
             "errors": [],
+            # Set True if a fetch fails with an authentication error (401, or a
+            # non-rate-limit 403). A dead/expired/under-scoped token trips this,
+            # and the CLI treats it as fatal so the failure is never silent.
+            "auth_failed": False,
         }
 
         workflows: List[str]
@@ -309,6 +317,12 @@ class OnCallService:
                     self._cache.store_runs(new_runs)
             except Exception as exc:
                 summary["errors"].append(f"fetch_runs({wf}): {exc}")
+                if (
+                    isinstance(exc, GitHubAPIError)
+                    and not isinstance(exc, RateLimitError)
+                    and exc.status_code in (401, 403)
+                ):
+                    summary["auth_failed"] = True
                 _log(f"  Error fetching {wf} runs: {exc}")
                 continue
 

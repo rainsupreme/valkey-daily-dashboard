@@ -415,3 +415,55 @@ class TestSyncRespectsWorkflowTypeFilter:
         stored = cache.query_runs()
         for run in stored:
             assert run["workflow_file"] == expected_file
+
+
+class TestSyncAuthFailure:
+    """sync() flags authentication failures so the CLI can fail loudly."""
+
+    def test_401_sets_auth_failed(self, temp_db_path: str) -> None:
+        from valkey_oncall.github_client import GitHubAPIError
+
+        client = MagicMock(repo="valkey-io/valkey")
+        client.get_workflow_runs.side_effect = GitHubAPIError(401, "Bad credentials")
+        svc = _make_service(temp_db_path, client)
+
+        summary = svc.sync(workflow="daily")
+
+        assert summary["auth_failed"] is True
+        assert summary["new_runs_fetched"] == 0
+        assert any("fetch_runs" in e for e in summary["errors"])
+
+    def test_forbidden_403_sets_auth_failed(self, temp_db_path: str) -> None:
+        from valkey_oncall.github_client import GitHubAPIError
+
+        client = MagicMock(repo="valkey-io/valkey")
+        client.get_workflow_runs.side_effect = GitHubAPIError(403, "Forbidden")
+        svc = _make_service(temp_db_path, client)
+
+        summary = svc.sync(workflow="daily")
+
+        assert summary["auth_failed"] is True
+
+    def test_rate_limit_403_is_not_auth_failure(self, temp_db_path: str) -> None:
+        from valkey_oncall.github_client import RateLimitError
+
+        client = MagicMock(repo="valkey-io/valkey")
+        client.get_workflow_runs.side_effect = RateLimitError(
+            403, "API rate limit exceeded", reset_at="123"
+        )
+        svc = _make_service(temp_db_path, client)
+
+        summary = svc.sync(workflow="daily")
+
+        # Transient rate limiting must NOT be treated as a dead token.
+        assert summary["auth_failed"] is False
+        assert any("fetch_runs" in e for e in summary["errors"])
+
+    def test_healthy_sync_not_auth_failed(self, temp_db_path: str) -> None:
+        client = MagicMock(repo="valkey-io/valkey")
+        client.get_workflow_runs.return_value = []
+        svc = _make_service(temp_db_path, client)
+
+        summary = svc.sync(workflow="daily")
+
+        assert summary["auth_failed"] is False

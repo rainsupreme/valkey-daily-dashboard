@@ -364,6 +364,13 @@ def sync(
             progress=progress,
         )
         click.echo(json.dumps(summary, indent=2))
+        if summary.get("auth_failed"):
+            click.echo(
+                "Error: GitHub authentication failed during sync (token "
+                "expired/revoked or lacks scope).",
+                err=True,
+            )
+            sys.exit(1)
     except GitHubAPIError as exc:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
@@ -594,6 +601,14 @@ def report(
             if sync_summary["errors"]:
                 for err in sync_summary["errors"]:
                     click.echo(f"  sync error: {err}", err=True)
+            if sync_summary.get("auth_failed"):
+                click.echo(
+                    "Error: GitHub authentication failed during sync (token "
+                    "expired/revoked or lacks scope). Aborting so the failure "
+                    "is not silently masked by stale cached data.",
+                    err=True,
+                )
+                sys.exit(1)
 
     click.echo(
         f"Generating report for {repo} {workflow} / {branch} (last {days} days)...",
