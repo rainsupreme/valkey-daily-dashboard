@@ -138,6 +138,12 @@ def compute_blame(
             1 if test_name in rf["failing_tests"] else 0 for rf in run_failures
         ]
 
+        # Wider all-history series for the sparkline display, so the full
+        # baseline before onset is always visible regardless of the detection
+        # window. (The heatmap-warning gate still uses the window series above.)
+        _fdates = hist_fail_dates.get(test_name, set())
+        history_series = [1 if d in _fdates else 0 for d in all_dates]
+
         # The "last green" is the run immediately before first_fail_idx
         if first_fail_idx == 0:
             # Test was already failing at the start of our window — no transition visible
@@ -156,6 +162,12 @@ def compute_blame(
                     "ongoing": _quiet_runs(test_name) < REGRESSION_ONGOING_QUIET_RUNS,
                     "daily_series": window_series,
                     "onset_index": 0,
+                    "history_series": history_series,
+                    "history_onset_index": (
+                        all_dates.index(run_failures[0]["run"]["run_date"][:10])
+                        if run_failures[0]["run"]["run_date"][:10] in all_dates
+                        else 0
+                    ),
                     "note": "Already failing at start of window — extend --days for full history",
                 }
             )
@@ -168,7 +180,7 @@ def compute_blame(
         head_sha = first_fail.get("commit_sha", "")
 
         commits: List[Dict] = []
-        if base_sha and head_sha and base_sha != head_sha:
+        if client and base_sha and head_sha and base_sha != head_sha:
             try:
                 commits = client.compare_commits(base_sha, head_sha)
             except Exception as exc:
@@ -201,6 +213,12 @@ def compute_blame(
                 "ongoing": quiet < REGRESSION_ONGOING_QUIET_RUNS,
                 "daily_series": window_series,
                 "onset_index": first_fail_idx,
+                "history_series": history_series,
+                "history_onset_index": (
+                    all_dates.index(first_fail["run_date"][:10])
+                    if first_fail["run_date"][:10] in all_dates
+                    else 0
+                ),
             }
         )
 

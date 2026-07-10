@@ -353,20 +353,47 @@ class TestLatestRunDate:
 
 
 class TestRegressionWarnings:
-    """Feature A: heatmap ⚠️ marker for ongoing likely-regression rows."""
+    """Heatmap ⚠️ marker for ongoing likely-regression rows."""
 
-    def test_gate_includes_ongoing_high_and_medium(self):
+    def _rec(self, name, fails, total, ongoing=True):
+        # onset at index 0; post-onset = fails failures then clean runs.
+        series = [1] * fails + [0] * (total - fails)
+        return {
+            "test_name": name,
+            "ongoing": ongoing,
+            "daily_series": series,
+            "onset_index": 0,
+        }
+
+    def test_effect_size_gate_matches_live_calibration(self):
         from valkey_oncall.report import _regression_warnings
 
         regs = [
-            {"test_name": "a", "ongoing": True, "confidence": "high"},
-            {"test_name": "b", "ongoing": True, "confidence": "medium"},
-            {"test_name": "c", "ongoing": True, "confidence": "low"},
-            {"test_name": "d", "ongoing": False, "confidence": "high"},
-            {"test_name": "e", "ongoing": True, "confidence": "unknown"},
+            self._rec("dual", 3, 6),  # lower90 ~21% -> flag
+            self._rec("assert", 2, 2),  # lower90 ~43% -> flag
+            self._rec("defrag", 7, 66),  # lower90 ~5.6% -> flag (just over)
+            self._rec("iothreads", 10, 88),  # lower90 ~6.7% -> flag
+            self._rec("migration", 6, 75),  # lower90 <5% -> NO (cluster noise)
+            self._rec("blip", 1, 1),  # < min failures -> NO
+            self._rec("done", 5, 5, ongoing=False),  # not ongoing -> NO
         ]
         warn = _regression_warnings(regs)
-        assert set(warn) == {"a", "b"}
+        assert set(warn) == {"dual", "assert", "defrag", "iothreads"}
+        # returns the lower bound, and it clears the meaningful-rate threshold
+        assert warn["defrag"] >= 0.05
+        assert warn["assert"] > warn["defrag"]
+
+    def test_min_failures_floor(self):
+        from valkey_oncall.report import _regression_warnings
+
+        # A single failure on the most recent run must not flag, even though an
+        # uninformative prior would push its lower bound high.
+        assert _regression_warnings([self._rec("x", 1, 1)]) == {}
+
+    def test_missing_series_skipped(self):
+        from valkey_oncall.report import _regression_warnings
+
+        assert _regression_warnings([{"test_name": "x", "ongoing": True}]) == {}
 
     def test_gate_empty(self):
         from valkey_oncall.report import _regression_warnings
@@ -375,7 +402,7 @@ class TestRegressionWarnings:
 
     def test_marker_rendered_for_durable_regression(self, cache):
         # ~10 clean days establish a baseline, then 4 consecutive failing runs
-        # produce a strong, ongoing regime change (high surprise).
+        # produce a durable, ongoing regression (meaningful post-onset rate).
         tr = TestRegressions()
         for i, off in enumerate(range(14, 4, -1)):
             tr._green_run(cache, 700 + i, 800 + i, _day(off), f"sha7{i:02d}")
@@ -387,7 +414,6 @@ class TestRegressionWarnings:
         data = generate_report_data(cache, days=14)
         rec = next(r for r in data["regressions"] if r["test_name"].startswith("regr"))
         assert rec["ongoing"] is True
-        assert rec["confidence"] in ("high", "medium")
 
         html = render_html(data)
         heatmap = html[
@@ -409,7 +435,7 @@ class TestRegressionWarnings:
 
 
 class TestSparklineOnset:
-    """Feature B: _sparkline draws an onset tick when mark_index is given."""
+    """_sparkline draws an onset tick when mark_index is given."""
 
     def test_mark_draws_amber_tick(self):
         from valkey_oncall.report import _sparkline
@@ -433,7 +459,7 @@ class TestSparklineOnset:
 
 
 class TestRegressionSparklineRender:
-    """Feature B: the Regressions tab renders an onset sparkline per row."""
+    """The Regressions tab renders an onset sparkline per row."""
 
     def test_onset_column_and_spark_present(self, cache):
         tr = TestRegressions()
@@ -450,3 +476,20 @@ class TestRegressionSparklineRender:
         assert ">Onset<" in reg  # new column header
         assert 'class="spark-cell"' in reg  # sparkline cell rendered
         assert "#d29922" in reg  # onset tick drawn
+
+
+class TestHeatmapMethodologyNote:
+    """The heatmap carries a methodology note explaining the ⚠️ gate."""
+
+    def test_note_and_links_present(self, cache):
+        _store_failure(cache, 900, 1000, _day(1), "x in tests/unit/z.tcl")
+        html = render_html(generate_report_data(cache, days=14))
+        heat = html[html.index('id="tab-heatmap"') : html.index('id="tab-scorecard"')]
+        assert "What the ⚠️ means" in heat
+        assert "en.wikipedia.org/wiki/Credible_interval" in heat
+        assert "en.wikipedia.org/wiki/Effect_size" in heat
+        assert "en.wikipedia.org/wiki/Beta_distribution" in heat
+        assert 'target="_blank"' in heat
+        # Injected gate constants (kept DRY via template vars).
+        assert "90% credible interval" in heat
+        assert "5%" in heat

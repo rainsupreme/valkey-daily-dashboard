@@ -104,3 +104,114 @@ def regression_confidence(
     else:
         label = "low"
     return label, burst_p, p0_hat
+
+
+# ---------------------------------------------------------------------------
+# Effect-size gate: posterior lower bound on the post-onset failure rate.
+#
+# "Is this failing often enough to matter?" is an effect-size question, not a
+# significance one. We take the Beta posterior over the post-onset rate and
+# report the lower end of a credible interval: "we're 90% confident the test
+# now fails at least X% of runs". This naturally folds in evidence sufficiency
+# (few observations -> wide posterior -> low bound) so it will not fire on a
+# single surprising blip, unlike a raw p-value.
+#
+# Needs the Beta quantile (inverse CDF). No scipy, so we implement the
+# regularized incomplete beta I_x(a,b) (== the Beta CDF) via the standard
+# Lentz continued fraction, then invert it by bisection.
+# Reference: Numerical Recipes, "Incomplete Beta Function".
+# ---------------------------------------------------------------------------
+
+
+def _betacf(a: float, b: float, x: float) -> float:
+    """Continued fraction for the incomplete beta function (Lentz's method)."""
+    fpmin = 1e-300
+    qab = a + b
+    qap = a + 1.0
+    qam = a - 1.0
+    c = 1.0
+    d = 1.0 - qab * x / qap
+    if abs(d) < fpmin:
+        d = fpmin
+    d = 1.0 / d
+    h = d
+    for m in range(1, 300):
+        m2 = 2 * m
+        aa = m * (b - m) * x / ((qam + m2) * (a + m2))
+        d = 1.0 + aa * d
+        if abs(d) < fpmin:
+            d = fpmin
+        c = 1.0 + aa / c
+        if abs(c) < fpmin:
+            c = fpmin
+        d = 1.0 / d
+        h *= d * c
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
+        d = 1.0 + aa * d
+        if abs(d) < fpmin:
+            d = fpmin
+        c = 1.0 + aa / c
+        if abs(c) < fpmin:
+            c = fpmin
+        d = 1.0 / d
+        delta = d * c
+        h *= delta
+        if abs(delta - 1.0) < 3e-14:
+            break
+    return h
+
+
+def betainc(a: float, b: float, x: float) -> float:
+    """Regularized incomplete beta I_x(a, b) -- the CDF of Beta(a, b)."""
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    lbt = (
+        math.lgamma(a + b)
+        - math.lgamma(a)
+        - math.lgamma(b)
+        + a * math.log(x)
+        + b * math.log(1.0 - x)
+    )
+    bt = math.exp(lbt)
+    if x < (a + 1.0) / (a + b + 2.0):
+        return bt * _betacf(a, b, x) / a
+    return 1.0 - bt * _betacf(b, a, 1.0 - x) / b
+
+
+def beta_quantile(a: float, b: float, q: float) -> float:
+    """Inverse CDF of Beta(a, b): the x with I_x(a,b) = q, via bisection."""
+    if q <= 0.0:
+        return 0.0
+    if q >= 1.0:
+        return 1.0
+    lo, hi = 0.0, 1.0
+    for _ in range(100):
+        mid = 0.5 * (lo + hi)
+        if betainc(a, b, mid) < q:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
+def regression_rate_lower_bound(
+    fails: int,
+    total: int,
+    credible: float = 0.90,
+    a0: float = PRIOR_A,
+    b0: float = PRIOR_B,
+) -> float:
+    """Lower bound of the ``credible`` central interval on the fail rate.
+
+    Given ``fails`` failures in ``total`` post-onset runs, form the Beta
+    posterior Beta(fails + a0, (total - fails) + b0) and return the lower end
+    of the central credible interval. Interpreted as: "we are ``credible``
+    confident the test now fails at least this fraction of runs."
+    """
+    if total <= 0:
+        return 0.0
+    a = fails + a0
+    b = (total - fails) + b0
+    return beta_quantile(a, b, (1.0 - credible) / 2.0)
