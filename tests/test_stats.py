@@ -72,3 +72,49 @@ class TestRegressionConfidence:
         _, burst_clean, _ = regression_confidence(1, 400, 2, 4)
         _, burst_flaky, _ = regression_confidence(40, 400, 2, 4)
         assert burst_clean < burst_flaky
+
+
+class TestBetaQuantileAndLowerBound:
+    """Beta CDF/quantile and the post-onset fail-rate lower bound."""
+
+    def test_betainc_endpoints(self):
+        from valkey_oncall.stats import betainc
+
+        assert betainc(2, 3, 0.0) == 0.0
+        assert betainc(2, 3, 1.0) == 1.0
+
+    def test_betainc_uniform_is_identity(self):
+        from valkey_oncall.stats import betainc
+
+        # Beta(1,1) is Uniform(0,1): its CDF is the identity.
+        for x in (0.1, 0.3, 0.5, 0.9):
+            assert abs(betainc(1, 1, x) - x) < 1e-6
+
+    def test_betainc_symmetry(self):
+        from valkey_oncall.stats import betainc
+
+        # I_x(a,b) == 1 - I_{1-x}(b,a)
+        assert abs(betainc(2, 5, 0.3) - (1 - betainc(5, 2, 0.7))) < 1e-9
+
+    def test_quantile_inverts_cdf(self):
+        from valkey_oncall.stats import beta_quantile, betainc
+
+        for a, b, q in [(2, 5, 0.05), (7.5, 60.5, 0.5), (0.5, 0.5, 0.9)]:
+            x = beta_quantile(a, b, q)
+            assert abs(betainc(a, b, x) - q) < 1e-4
+
+    def test_lower_bound_calibration(self):
+        from valkey_oncall.stats import regression_rate_lower_bound as lb
+
+        # Matches the live-data decisions used to design the gate.
+        assert lb(7, 66) >= 0.05  # flagged (durable-ish)
+        assert lb(6, 75) < 0.05  # not flagged (cluster noise)
+        assert lb(2, 2) > lb(3, 6) > lb(7, 66)  # stronger evidence -> higher
+        assert lb(0, 0) == 0.0  # degenerate guard
+
+    def test_lower_bound_in_unit_interval(self):
+        from valkey_oncall.stats import regression_rate_lower_bound as lb
+
+        for f, t in [(1, 1), (2, 2), (5, 50), (10, 88), (50, 50)]:
+            v = lb(f, t)
+            assert 0.0 <= v <= 1.0

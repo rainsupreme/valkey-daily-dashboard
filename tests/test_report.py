@@ -355,18 +355,45 @@ class TestLatestRunDate:
 class TestRegressionWarnings:
     """Feature A: heatmap ⚠️ marker for ongoing likely-regression rows."""
 
-    def test_gate_includes_ongoing_high_and_medium(self):
+    def _rec(self, name, fails, total, ongoing=True):
+        # onset at index 0; post-onset = fails failures then clean runs.
+        series = [1] * fails + [0] * (total - fails)
+        return {
+            "test_name": name,
+            "ongoing": ongoing,
+            "daily_series": series,
+            "onset_index": 0,
+        }
+
+    def test_effect_size_gate_matches_live_calibration(self):
         from valkey_oncall.report import _regression_warnings
 
         regs = [
-            {"test_name": "a", "ongoing": True, "confidence": "high"},
-            {"test_name": "b", "ongoing": True, "confidence": "medium"},
-            {"test_name": "c", "ongoing": True, "confidence": "low"},
-            {"test_name": "d", "ongoing": False, "confidence": "high"},
-            {"test_name": "e", "ongoing": True, "confidence": "unknown"},
+            self._rec("dual", 3, 6),  # lower90 ~21% -> flag
+            self._rec("assert", 2, 2),  # lower90 ~43% -> flag
+            self._rec("defrag", 7, 66),  # lower90 ~5.6% -> flag (just over)
+            self._rec("iothreads", 10, 88),  # lower90 ~6.7% -> flag
+            self._rec("migration", 6, 75),  # lower90 <5% -> NO (cluster noise)
+            self._rec("blip", 1, 1),  # < min failures -> NO
+            self._rec("done", 5, 5, ongoing=False),  # not ongoing -> NO
         ]
         warn = _regression_warnings(regs)
-        assert set(warn) == {"a", "b"}
+        assert set(warn) == {"dual", "assert", "defrag", "iothreads"}
+        # returns the lower bound, and it clears the meaningful-rate threshold
+        assert warn["defrag"] >= 0.05
+        assert warn["assert"] > warn["defrag"]
+
+    def test_min_failures_floor(self):
+        from valkey_oncall.report import _regression_warnings
+
+        # A single failure on the most recent run must not flag, even though an
+        # uninformative prior would push its lower bound high.
+        assert _regression_warnings([self._rec("x", 1, 1)]) == {}
+
+    def test_missing_series_skipped(self):
+        from valkey_oncall.report import _regression_warnings
+
+        assert _regression_warnings([{"test_name": "x", "ongoing": True}]) == {}
 
     def test_gate_empty(self):
         from valkey_oncall.report import _regression_warnings
@@ -375,7 +402,7 @@ class TestRegressionWarnings:
 
     def test_marker_rendered_for_durable_regression(self, cache):
         # ~10 clean days establish a baseline, then 4 consecutive failing runs
-        # produce a strong, ongoing regime change (high surprise).
+        # produce a durable, ongoing regression (meaningful post-onset rate).
         tr = TestRegressions()
         for i, off in enumerate(range(14, 4, -1)):
             tr._green_run(cache, 700 + i, 800 + i, _day(off), f"sha7{i:02d}")
@@ -387,7 +414,6 @@ class TestRegressionWarnings:
         data = generate_report_data(cache, days=14)
         rec = next(r for r in data["regressions"] if r["test_name"].startswith("regr"))
         assert rec["ongoing"] is True
-        assert rec["confidence"] in ("high", "medium")
 
         html = render_html(data)
         heatmap = html[

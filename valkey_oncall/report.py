@@ -20,6 +20,7 @@ from valkey_oncall.scorecard import (
     RESOLVED_QUIET_RUNS,
     compute_scorecards,
 )
+from valkey_oncall.stats import regression_rate_lower_bound
 
 _ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 logger = logging.getLogger(__name__)
@@ -31,6 +32,14 @@ logger = logging.getLogger(__name__)
 # not false-alarm; an expired token is caught immediately by the sync's
 # auth_failed flag regardless of this threshold.
 MAX_RUN_AGE_DAYS = 2
+
+# Heatmap regression-warning gate (effect-size, not significance). Flag an
+# ongoing regression only when we are HEATMAP_WARN_CI confident its post-onset
+# failure rate is at least HEATMAP_WARN_MEANINGFUL_RATE, with a minimum number
+# of failures as an evidence floor. Tunable after seeing it live.
+HEATMAP_WARN_CI = 0.90
+HEATMAP_WARN_MEANINGFUL_RATE = 0.05
+HEATMAP_WARN_MIN_FAILURES = 2
 
 
 def stale_reason(
@@ -286,6 +295,7 @@ def render_html(data: Dict) -> str:
 
     # Likely-regression lookup for heatmap warning markers (Feature A).
     reg_warnings = _regression_warnings(data.get("regressions", []))
+    _reg_by_name = {r["test_name"]: r for r in data.get("regressions", [])}
 
     # Build date headers — M/D format, no leading zeros
     date_headers = ""
@@ -325,13 +335,13 @@ def render_html(data: Dict) -> str:
                 tip = html.escape(f"{n}x on {d}\nJobs: {jobs}\nError: {errs}")
                 cells += f'<td class="cell fail" title="{tip}">{n}</td>'
 
-        warn = reg_warnings.get(test_name)
+        warn_lb = reg_warnings.get(test_name)
         warn_marker = ""
-        if warn:
+        if warn_lb is not None:
+            onset = _reg_by_name.get(test_name, {}).get("regression_date", "?")
             wtip = html.escape(
-                f"Likely ongoing regression — surprise "
-                f"{_surprise_str(warn.get('burst_p'))}, onset "
-                f"{warn.get('regression_date', '?')}. Click for details."
+                f"Likely regression — 90% confident it now fails "
+                f">={warn_lb * 100:.0f}% of runs since {onset}. Click for details."
             )
             warn_marker = f'<a class="regwarn" href="#regressions" title="{wtip}">⚠️</a>'
 
@@ -663,21 +673,22 @@ def _sparkline(
         return ""
     n = len(series)
     mx = max(series) or 1
-    bar_w = max(1, width // n)
+    step = width / n
+    bw = max(0.6, step * 0.8)
     bars = []
     for i, v in enumerate(series):
         h = round(v / mx * (height - 2)) if v else 0
-        x = i * bar_w
+        x = i * step
         y = height - max(h, 1)
         color = "#da3633" if v else "#30363d"
         bars.append(
-            f'<rect x="{x}" y="{y}" width="{max(1, bar_w - 1)}" '
+            f'<rect x="{x:.2f}" y="{y}" width="{bw:.2f}" '
             f'height="{max(h, 1)}" fill="{color}"/>'
         )
     if mark_index is not None and 0 <= mark_index < n:
-        mx_x = mark_index * bar_w
+        mx_x = mark_index * step
         bars.append(
-            f'<rect x="{max(0, mx_x - 1)}" y="0" width="2" height="{height}" '
+            f'<rect x="{max(0.0, mx_x - 1):.2f}" y="0" width="2" height="{height}" '
             f'fill="#d29922"><title>onset</title></rect>'
         )
     return (
@@ -770,20 +781,37 @@ def _surprise_str(burst_p) -> str:
     return f"{pct:.1f}%"
 
 
-def _regression_warnings(regressions: List[Dict]) -> Dict[str, Dict]:
-    """Map test_name -> record for ongoing, high/medium-surprise regressions.
+def _regression_warnings(regressions: List[Dict]) -> Dict[str, float]:
+    """Map test_name -> post-onset fail-rate lower bound for MEANINGFUL rows.
 
-    Used to flag likely-regression rows in the heatmap with a ⚠️ so the
-    signal is visible without opening the Regressions tab. The gate reuses
-    the existing confidence tiers (burst_p <= CONF_MED_P == "high"/"medium")
-    rather than a new threshold, and requires the regression to be ongoing
-    (a likely-fixed regression is not worth flagging on the live heatmap).
+    Flags an ongoing regression for a heatmap ⚠️ only when it is failing
+    often enough to matter, judged by an effect-size test rather than a
+    p-value: from the Beta posterior over the post-onset failure rate, we
+    require the lower end of a ``HEATMAP_WARN_CI`` credible interval to be at
+    least ``HEATMAP_WARN_MEANINGFUL_RATE`` -- i.e. "we're 90% confident this
+    test now fails >= 5% of runs". A ``HEATMAP_WARN_MIN_FAILURES`` floor
+    guards against the degenerate tiny-window case (a lone failure on the
+    most recent run) where an uninformative prior over-concentrates.
+
+    Returns the lower bound per flagged test (used for the tooltip).
     """
-    return {
-        r["test_name"]: r
-        for r in regressions
-        if r.get("ongoing") and r.get("confidence") in ("high", "medium")
-    }
+    warn: Dict[str, float] = {}
+    for r in regressions:
+        if not r.get("ongoing"):
+            continue
+        series = r.get("daily_series")
+        onset = r.get("onset_index")
+        if series is None or onset is None:
+            continue
+        post = series[onset:]
+        fails = sum(post)
+        total = len(post)
+        if fails < HEATMAP_WARN_MIN_FAILURES:
+            continue
+        lb = regression_rate_lower_bound(fails, total, credible=HEATMAP_WARN_CI)
+        if lb >= HEATMAP_WARN_MEANINGFUL_RATE:
+            warn[r["test_name"]] = lb
+    return warn
 
 
 def _render_regression_rows(records: List[Dict], repo: str = "valkey-io/valkey") -> str:
@@ -857,7 +885,7 @@ def _render_regression_rows(records: List[Dict], repo: str = "valkey-io/valkey")
             f'<td><span class="{cls}" title="{html.escape(conf_title)}">'
             f"{_surprise_str(burst_p)}</span></td>"
             f'<td class="spark-cell">'
-            f"{_sparkline(r.get('daily_series', []), mark_index=r.get('onset_index'))}"
+            f"{_sparkline(r.get('history_series') or r.get('daily_series', []), mark_index=r.get('history_onset_index', r.get('onset_index')))}"
             f"</td>"
             f'<td class="freq">{rate:.0f}%</td>'
             f"</tr>"
