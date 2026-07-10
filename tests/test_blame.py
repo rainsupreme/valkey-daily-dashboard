@@ -221,6 +221,27 @@ class TestComputeBlame:
         assert rec["p0_hat"] < 0.05
         assert rec["ongoing"] is True  # still failing on the most recent run
 
+    def test_daily_series_and_onset_index(self, cache, mock_client):
+        """Record carries a chronological 0/1 window series marked at onset."""
+        rid = 100
+        for off in range(0, 6):  # 6 clean days
+            _store(cache, rid, off)
+            rid += 1
+        for off in range(6, 10):  # then 4 failing days
+            _store(cache, rid, off, "novel_test")
+            rid += 1
+
+        result = compute_blame(cache, mock_client, days=60)
+        rec = next(r for r in result if r["test_name"] == "novel_test")
+
+        series = rec["daily_series"]
+        onset = rec["onset_index"]
+        assert len(series) == 10  # one entry per in-window run
+        assert onset == 6
+        assert series[onset] == 1
+        assert all(v == 0 for v in series[:onset])  # clean before onset
+        assert all(v == 1 for v in series[onset:])  # failing from onset on
+
     def test_regression_marked_fixed_when_quiet(self, cache, mock_client):
         """A regression whose test goes quiet for >= threshold runs is fixed."""
         from valkey_oncall.blame import REGRESSION_ONGOING_QUIET_RUNS as q

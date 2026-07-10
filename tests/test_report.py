@@ -350,6 +350,8 @@ class TestLatestRunDate:
     def test_latest_run_date_none_when_empty(self, cache):
         data = generate_report_data(cache, days=14)
         assert data["summary"]["latest_run_date"] is None
+
+
 class TestRegressionWarnings:
     """Feature A: heatmap ⚠️ marker for ongoing likely-regression rows."""
 
@@ -404,3 +406,47 @@ class TestRegressionWarnings:
             html.index('id="tab-heatmap"') : html.index('id="tab-scorecard"')
         ]
         assert 'class="regwarn"' not in heatmap
+
+
+class TestSparklineOnset:
+    """Feature B: _sparkline draws an onset tick when mark_index is given."""
+
+    def test_mark_draws_amber_tick(self):
+        from valkey_oncall.report import _sparkline
+
+        assert "#d29922" in _sparkline([0, 0, 1, 1], mark_index=2)
+
+    def test_no_mark_no_tick(self):
+        from valkey_oncall.report import _sparkline
+
+        assert "#d29922" not in _sparkline([0, 0, 1, 1])
+
+    def test_out_of_range_mark_ignored(self):
+        from valkey_oncall.report import _sparkline
+
+        assert "#d29922" not in _sparkline([0, 1], mark_index=9)
+
+    def test_empty_series_empty_string(self):
+        from valkey_oncall.report import _sparkline
+
+        assert _sparkline([], mark_index=0) == ""
+
+
+class TestRegressionSparklineRender:
+    """Feature B: the Regressions tab renders an onset sparkline per row."""
+
+    def test_onset_column_and_spark_present(self, cache):
+        tr = TestRegressions()
+        for i, off in enumerate(range(14, 4, -1)):
+            tr._green_run(cache, 600 + i, 700 + i, _day(off), f"sha6{i:02d}")
+        for i, off in enumerate([3, 2, 1, 0]):
+            _store_failure(
+                cache, 620 + i, 720 + i, _day(off), "regr in tests/unit/w.tcl"
+            )
+
+        data = generate_report_data(cache, days=14)
+        html = render_html(data)
+        reg = html[html.index('id="tab-regressions"') :]
+        assert ">Onset<" in reg  # new column header
+        assert 'class="spark-cell"' in reg  # sparkline cell rendered
+        assert "#d29922" in reg  # onset tick drawn
