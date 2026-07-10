@@ -293,7 +293,7 @@ def render_html(data: Dict) -> str:
     runs = data["runs"]
     repo = summary.get("repo", "valkey-io/valkey")
 
-    # Likely-regression lookup for heatmap warning markers (Feature A).
+    # Likely-regression lookup for heatmap warning markers.
     reg_warnings = _regression_warnings(data.get("regressions", []))
     _reg_by_name = {r["test_name"]: r for r in data.get("regressions", [])}
 

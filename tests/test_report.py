@@ -353,7 +353,7 @@ class TestLatestRunDate:
 
 
 class TestRegressionWarnings:
-    """Feature A: heatmap ⚠️ marker for ongoing likely-regression rows."""
+    """Heatmap ⚠️ marker for ongoing likely-regression rows."""
 
     def _rec(self, name, fails, total, ongoing=True):
         # onset at index 0; post-onset = fails failures then clean runs.
@@ -435,7 +435,7 @@ class TestRegressionWarnings:
 
 
 class TestSparklineOnset:
-    """Feature B: _sparkline draws an onset tick when mark_index is given."""
+    """_sparkline draws an onset tick when mark_index is given."""
 
     def test_mark_draws_amber_tick(self):
         from valkey_oncall.report import _sparkline
@@ -459,7 +459,7 @@ class TestSparklineOnset:
 
 
 class TestRegressionSparklineRender:
-    """Feature B: the Regressions tab renders an onset sparkline per row."""
+    """The Regressions tab renders an onset sparkline per row."""
 
     def test_onset_column_and_spark_present(self, cache):
         tr = TestRegressions()
