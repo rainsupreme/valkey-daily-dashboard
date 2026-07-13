@@ -72,6 +72,11 @@
     panels.forEach(function (p) {
       p.classList.toggle("active", p.id === target);
     });
+    // When the Heatmap tab becomes visible, (re)apply the scroll-right +
+    // fade indicators — a hidden panel has no measurable width at load.
+    if (name === "heatmap" && typeof initHeatmapScroll === "function") {
+      requestAnimationFrame(initHeatmapScroll);
+    }
     return true;
   }
 
@@ -99,15 +104,30 @@
   });
 })();
 
-// Start wide heatmaps (CI per-commit) scrolled fully right so the most
-// recent runs are visible on load. Narrow tables are a no-op.
-(function () {
-  function scrollRight() {
-    document.querySelectorAll(".heatmap-scroll.scroll-right").forEach(function (el) {
-      el.scrollLeft = el.scrollWidth;
-    });
-  }
-  scrollRight();
-  // Re-apply once layout/fonts settle (rotated SHA headers affect width).
-  window.addEventListener("load", scrollRight);
-})();
+// Wide CI (per-commit) heatmaps: start scrolled fully right (newest visible)
+// and show left/right fade indicators so it's obvious there's off-screen
+// content. Defined at top level so tab activation can re-run it.
+function updateHeatmapFade(el) {
+  var wrap = el.parentNode;
+  if (!wrap || !wrap.classList.contains("heatmap-scroll-wrap")) return;
+  var maxScroll = el.scrollWidth - el.clientWidth;
+  wrap.classList.toggle("show-left", el.scrollLeft > 2);
+  wrap.classList.toggle("show-right", el.scrollLeft < maxScroll - 2);
+}
+
+function initHeatmapScroll() {
+  document.querySelectorAll(".heatmap-scroll.scroll-right").forEach(function (el) {
+    el.scrollLeft = el.scrollWidth; // newest runs on the right
+    updateHeatmapFade(el);
+    if (!el.__fadeWired) {
+      el.addEventListener("scroll", function () {
+        updateHeatmapFade(el);
+      });
+      el.__fadeWired = true;
+    }
+  });
+}
+
+initHeatmapScroll();
+// Re-apply once layout/fonts settle (rotated SHA headers affect width).
+window.addEventListener("load", initHeatmapScroll);
