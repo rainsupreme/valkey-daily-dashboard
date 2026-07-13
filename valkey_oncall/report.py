@@ -336,10 +336,13 @@ def _render_heatmap_table(data: Dict) -> str:
     reg_by_name = {r["test_name"]: r for r in data.get("regressions", [])}
 
     date_headers = ""
+    col_cls = "date-col rot" if per_run else "date-col"
     for c in columns:
+        label = html.escape(c.get("label", c["key"]))
+        cell = f"<span>{label}</span>" if per_run else label
         date_headers += (
-            f'<th class="date-col" title="{html.escape(c.get("title", c["key"]))}">'
-            f"{html.escape(c.get('label', c['key']))}</th>"
+            f'<th class="{col_cls}" title="{html.escape(c.get("title", c["key"]))}">'
+            f"{cell}</th>"
         )
 
     run_status_cells = ""
@@ -409,9 +412,12 @@ def _render_heatmap_table(data: Dict) -> str:
         'background:#238636; border-radius:2px; vertical-align:middle;"></span> passed '
         '<span style="display:inline-block; width:10px; height:10px; '
         'background:#21262d; border-radius:2px; vertical-align:middle;"></span> no failure.'
+        " A red <b>Run status</b> with no test cells below it means the run "
+        "failed on build / sanitizer / setup / timeout — no individual test failed."
         "</caption>"
     )
-    return f"""<table>
+    scroll_cls = "heatmap-scroll scroll-right" if per_run else "heatmap-scroll"
+    return f"""<div class="{scroll_cls}"><table>
   {caption}
   <thead>
     <tr><th class="test-name">Test</th><th class="freq" title="{recent_ttl}">{recent_hdr}</th><th class="freq" title="Failure rate over last 90 days">90d</th>{date_headers}</tr>
@@ -420,7 +426,7 @@ def _render_heatmap_table(data: Dict) -> str:
   <tbody>
     {test_rows}
   </tbody>
-</table>"""
+</table></div>"""
 
 
 def render_html(data: Dict, ci_data: Dict | None = None) -> str:
@@ -440,7 +446,7 @@ def render_html(data: Dict, ci_data: Dict | None = None) -> str:
             f'<h3 class="wf-title">CI · last {n_ci} merge runs (per commit) '
             "— freshest signal</h3>"
             + _render_heatmap_table(ci_data)
-            + '<details class="wf-daily"><summary>Daily · nightly full suite '
+            + '<details class="wf-daily" open><summary>Daily · nightly full suite '
             f"(last {summary.get('days', 14)} days)</summary>"
             + _render_heatmap_table(data)
             + "</details>"
@@ -528,7 +534,7 @@ def render_html(data: Dict, ci_data: Dict | None = None) -> str:
     # --- CI (per-run) blocks stacked ABOVE the Daily views ---
     _SC_HEAD = (
         "<thead><tr><th>#</th><th>Test</th><th>Class</th><th>Trend</th>"
-        "<th>Category</th><th>Rate</th><th>Days</th>"
+        '<th>Category</th><th>Rate</th><th title="runs failed / total runs">Runs</th>'
         "<th>Recent activity</th></tr></thead>"
     )
     _REG_HEAD = (
@@ -869,7 +875,7 @@ def _render_scorecard_rows(scorecards: List[Dict]) -> str:
             f'<td class="{tr_cls}" title="{tr_title}">{arrow}</td>'
             f'<td><span class="cat-chip">{html.escape(cat)}</span></td>'
             f'<td class="freq" title="failed {days_failed} of {total_runs} '
-            f'recorded days (all history)">{rate_str}</td>'
+            f'recorded runs (all history)">{rate_str}</td>'
             f'<td class="freq">{days_failed}/{total_runs}</td>'
             f'<td class="spark-cell">{_sparkline(series)}</td>'
             f"</tr>"
@@ -891,8 +897,8 @@ def _render_resolved_section(resolved: List[Dict]) -> str:
         f"last {RESOLVED_QUIET_RUNS}+ runs</summary>"
         '<table class="scorecard-table">'
         "<thead><tr><th>#</th><th>Test</th><th>Class</th><th>Trend</th>"
-        '<th>Category</th><th title="Share of all recorded CI days the test '
-        'failed">Rate</th><th>Days</th><th>Recent activity</th></tr></thead>'
+        '<th>Category</th><th title="Share of all recorded runs the test '
+        'failed">Rate</th><th title="runs failed / total runs">Runs</th><th>Recent activity</th></tr></thead>'
         f"<tbody>{rows}</tbody></table></details>"
     )
 
@@ -1061,7 +1067,7 @@ ${styles}
 <body>
 <h1>Valkey CI Failure Report</h1>
 <p class="meta">${workflow} · ${branch} · ${repo} · last ${days} days · generated ${generated}</p>
-<p class="hint">Daily CI failure trends for the <b>${branch}</b> branch. Tracks which tests fail, how often, and whether they are getting better or worse.</p>
+<p class="hint">Valkey CI failure trends for the <b>${branch}</b> branch — nightly Daily suite and per-commit CI. Tracks which tests fail, how often, and whether they are getting better or worse.</p>
 
 <div class="stats">
   <div class="stat"><div class="stat-val">${total_runs}</div><div class="stat-label">runs</div></div>
@@ -1091,12 +1097,12 @@ ${heatmap_body}
 <div class="section">
   <h2>Flaky Test Scorecard</h2>
   <p class="hint">Every test that has failed in recorded CI history, ranked worst-first — the full flaky roster, independent of the recent heatmap above.
-    Rate = share of all recorded CI days the test failed (the denominator grows as history accrues, so low rates become expressible over time).
+    Rate = share of all recorded runs the test failed (the denominator grows as history accrues, so low rates become expressible over time).
     Class: <span class="badge-persistent">persistent</span> = fails a majority of runs, or the last ${persistent_streak} runs straight ·
     <span class="badge-flaky">flaky</span> = recurring / intermittent ·
     <span class="badge-rare">rare</span> = a single one-off failure.
     Trend: <span class="trend-up">↑</span> worse / <span class="trend-down">↓</span> better / <span class="trend-flat">→</span> flat (recent window).
-    Greyed rows are cooling off (no failure in the last ${cooling_runs}+ runs); tests quiet for ${resolved_runs}+ runs drop to the collapsed <b>Resolved</b> sub-list below. The activity sparkline shows per-day failure counts over the recent window.
+    Greyed rows are cooling off (no failure in the last ${cooling_runs}+ runs); tests quiet for ${resolved_runs}+ runs drop to the collapsed <b>Resolved</b> sub-list below. The activity sparkline shows failure counts over the recent window.
   </p>
   ${ci_scorecard}
   <div id="scorecard-controls">
@@ -1112,7 +1118,7 @@ ${heatmap_body}
     <button data-sort="days">days</button>
   </div>
   <table class="scorecard-table">
-    <thead><tr><th>#</th><th>Test</th><th>Class</th><th>Trend</th><th>Category</th><th title="Share of all recorded CI days the test failed">Rate</th><th>Days</th><th title="Per-day failures over the recent window">Recent activity</th></tr></thead>
+    <thead><tr><th>#</th><th>Test</th><th>Class</th><th>Trend</th><th>Category</th><th title="Share of all recorded runs the test failed">Rate</th><th title="runs failed / total runs">Runs</th><th title="Failures over the recent window">Recent activity</th></tr></thead>
     <tbody id="scorecard-body">${scorecard_rows}</tbody>
   </table>
   ${resolved_section}
@@ -1121,8 +1127,8 @@ ${heatmap_body}
 
 <div class="tab-panel" id="tab-rundetails" role="tabpanel">
 <div class="section">
-  <h2>Run Details (newest first)</h2>
-  <p class="hint">Each row is one daily CI run. Status shows failed/total jobs. Numbered links like [1][2] go to the specific job logs on GitHub. Hover over a commit SHA to see the commit message.</p>
+  <h2>Run Details — Daily workflow (newest first)</h2>
+  <p class="hint">Each row is one nightly <b>Daily</b>-workflow run. This tab covers the Daily workflow only; per-commit CI detail lives in the Heatmap and Regressions tabs. Status shows failed/total jobs. Numbered links like [1][2] go to the specific job logs on GitHub. Hover over a commit SHA to see the commit message.</p>
   <table class="detail-table">
     <thead><tr><th>Date</th><th>Status</th><th>Commit</th><th>#</th><th>Unique Failures</th><th>Failed Jobs</th><th>Commits since prev run</th></tr></thead>
     <tbody>${run_detail_rows}</tbody>

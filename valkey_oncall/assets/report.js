@@ -98,3 +98,16 @@
     activate(fromHash());
   });
 })();
+
+// Start wide heatmaps (CI per-commit) scrolled fully right so the most
+// recent runs are visible on load. Narrow tables are a no-op.
+(function () {
+  function scrollRight() {
+    document.querySelectorAll(".heatmap-scroll.scroll-right").forEach(function (el) {
+      el.scrollLeft = el.scrollWidth;
+    });
+  }
+  scrollRight();
+  // Re-apply once layout/fonts settle (rotated SHA headers affect width).
+  window.addEventListener("load", scrollRight);
+})();

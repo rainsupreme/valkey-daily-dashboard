@@ -647,6 +647,7 @@ def report(
                 repo=repo,
                 client=client,
                 per_run=True,
+                max_runs=40,
             )
         content = render_html(data, ci_data=ci_data)
     else:
