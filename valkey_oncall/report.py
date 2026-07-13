@@ -533,7 +533,7 @@ def render_html(data: Dict, ci_data: Dict | None = None) -> str:
     # --- CI (per-run) blocks stacked ABOVE the Daily views ---
     _SC_HEAD = (
         "<thead><tr><th>#</th><th>Test</th><th>Class</th><th>Trend</th>"
-        "<th>Category</th><th>Rate</th><th>Days</th>"
+        '<th>Category</th><th>Rate</th><th title="runs failed / total runs">Runs</th>'
         "<th>Recent activity</th></tr></thead>"
     )
     _REG_HEAD = (
@@ -874,7 +874,7 @@ def _render_scorecard_rows(scorecards: List[Dict]) -> str:
             f'<td class="{tr_cls}" title="{tr_title}">{arrow}</td>'
             f'<td><span class="cat-chip">{html.escape(cat)}</span></td>'
             f'<td class="freq" title="failed {days_failed} of {total_runs} '
-            f'recorded days (all history)">{rate_str}</td>'
+            f'recorded runs (all history)">{rate_str}</td>'
             f'<td class="freq">{days_failed}/{total_runs}</td>'
             f'<td class="spark-cell">{_sparkline(series)}</td>'
             f"</tr>"
@@ -896,8 +896,8 @@ def _render_resolved_section(resolved: List[Dict]) -> str:
         f"last {RESOLVED_QUIET_RUNS}+ runs</summary>"
         '<table class="scorecard-table">'
         "<thead><tr><th>#</th><th>Test</th><th>Class</th><th>Trend</th>"
-        '<th>Category</th><th title="Share of all recorded CI days the test '
-        'failed">Rate</th><th>Days</th><th>Recent activity</th></tr></thead>'
+        '<th>Category</th><th title="Share of all recorded runs the test '
+        'failed">Rate</th><th title="runs failed / total runs">Runs</th><th>Recent activity</th></tr></thead>'
         f"<tbody>{rows}</tbody></table></details>"
     )
 
@@ -1096,12 +1096,12 @@ ${heatmap_body}
 <div class="section">
   <h2>Flaky Test Scorecard</h2>
   <p class="hint">Every test that has failed in recorded CI history, ranked worst-first — the full flaky roster, independent of the recent heatmap above.
-    Rate = share of all recorded CI days the test failed (the denominator grows as history accrues, so low rates become expressible over time).
+    Rate = share of all recorded runs the test failed (the denominator grows as history accrues, so low rates become expressible over time).
     Class: <span class="badge-persistent">persistent</span> = fails a majority of runs, or the last ${persistent_streak} runs straight ·
     <span class="badge-flaky">flaky</span> = recurring / intermittent ·
     <span class="badge-rare">rare</span> = a single one-off failure.
     Trend: <span class="trend-up">↑</span> worse / <span class="trend-down">↓</span> better / <span class="trend-flat">→</span> flat (recent window).
-    Greyed rows are cooling off (no failure in the last ${cooling_runs}+ runs); tests quiet for ${resolved_runs}+ runs drop to the collapsed <b>Resolved</b> sub-list below. The activity sparkline shows per-day failure counts over the recent window.
+    Greyed rows are cooling off (no failure in the last ${cooling_runs}+ runs); tests quiet for ${resolved_runs}+ runs drop to the collapsed <b>Resolved</b> sub-list below. The activity sparkline shows failure counts over the recent window.
   </p>
   ${ci_scorecard}
   <div id="scorecard-controls">
@@ -1117,7 +1117,7 @@ ${heatmap_body}
     <button data-sort="days">days</button>
   </div>
   <table class="scorecard-table">
-    <thead><tr><th>#</th><th>Test</th><th>Class</th><th>Trend</th><th>Category</th><th title="Share of all recorded CI days the test failed">Rate</th><th>Days</th><th title="Per-day failures over the recent window">Recent activity</th></tr></thead>
+    <thead><tr><th>#</th><th>Test</th><th>Class</th><th>Trend</th><th>Category</th><th title="Share of all recorded runs the test failed">Rate</th><th title="runs failed / total runs">Runs</th><th title="Failures over the recent window">Recent activity</th></tr></thead>
     <tbody id="scorecard-body">${scorecard_rows}</tbody>
   </table>
   ${resolved_section}
