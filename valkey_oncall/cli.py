@@ -546,6 +546,12 @@ def blame(
     default=False,
     help="Skip syncing latest data before generating the report.",
 )
+@click.option(
+    "--with-ci",
+    is_flag=True,
+    default=False,
+    help="Also render the CI (per-commit) workflow stacked above Daily (HTML only).",
+)
 @click.pass_context
 def report(
     ctx: click.Context,
@@ -555,6 +561,7 @@ def report(
     fmt: str,
     output: str,
     no_sync: bool,
+    with_ci: bool,
 ) -> None:
     """Generate a failure trend report, syncing latest data first."""
     from valkey_oncall.report import (
@@ -628,7 +635,22 @@ def report(
         "markdown": render_markdown,
         "slack": render_slack,
     }
-    content = renderers[fmt](data)
+    if fmt == "html":
+        ci_data = None
+        if with_ci:
+            # CI (per-commit) view, read from cache alongside Daily and stacked
+            # on top. Empty columns render gracefully if CI isn't synced yet.
+            ci_data = generate_report_data(
+                cache,
+                branch=branch,
+                workflow="ci.yml",
+                repo=repo,
+                client=client,
+                per_run=True,
+            )
+        content = render_html(data, ci_data=ci_data)
+    else:
+        content = renderers[fmt](data)
 
     default_ext = {"html": ".html", "markdown": ".md", "slack": ".txt"}
     if output is None:

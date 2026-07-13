@@ -42,7 +42,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.VALKEY_CI_TOKEN }}
         run: |
           mkdir -p _site
-          valkey-oncall -v report --format html -o _site/index.html
+          # Sync CI (post-merge runs on unstable) so the stacked CI view has
+          # data. Bounded to a recent window to keep the daily job fast; the
+          # cache persists across runs so this stays incremental.
+          valkey-oncall -v sync --workflow ci --branch unstable \
+            --since "$(date -u -d '60 days ago' +%Y-%m-%dT00:00:00Z)"
+          valkey-oncall -v report --format html --with-ci -o _site/index.html
           valkey-oncall -v report --format markdown -o _site/report.md --no-sync
           valkey-oncall scorecard --no-sync -o _site/scorecards.json
           valkey-oncall blame --no-sync -o _site/blame.json
@@ -53,6 +58,15 @@ jobs:
           cache = Cache(str(Path('~/.valkey-oncall/cache.db').expanduser()))
           data = generate_report_data(cache, days=14, branch='unstable', workflow='daily.yml')
           Path('_site/report.json').write_text(json.dumps(data, indent=2))
+          # CI (per-commit) machine export. Staleness is warn-only: merges are
+          # bursty (quiet weekends are normal), so it must not gate the deploy.
+          ci = generate_report_data(cache, branch='unstable', workflow='ci.yml', per_run=True)
+          Path('_site/report-ci.json').write_text(json.dumps(ci, indent=2))
+          ci_reason = stale_reason(ci['summary'].get('latest_run_date'))
+          if ci_reason:
+              print(f'WARNING: CI report stale — {ci_reason}', file=sys.stderr)
+          # Daily freshness is the hard gate: nightly cadence is regular, and a
+          # dead/expired token trips this (the shared token also covers CI).
           reason = stale_reason(data['summary'].get('latest_run_date'))
           if reason:
               print(f'ERROR: report is stale — {reason}', file=sys.stderr)
