@@ -336,10 +336,13 @@ def _render_heatmap_table(data: Dict) -> str:
     reg_by_name = {r["test_name"]: r for r in data.get("regressions", [])}
 
     date_headers = ""
+    col_cls = "date-col rot" if per_run else "date-col"
     for c in columns:
+        label = html.escape(c.get("label", c["key"]))
+        cell = f"<span>{label}</span>" if per_run else label
         date_headers += (
-            f'<th class="date-col" title="{html.escape(c.get("title", c["key"]))}">'
-            f"{html.escape(c.get('label', c['key']))}</th>"
+            f'<th class="{col_cls}" title="{html.escape(c.get("title", c["key"]))}">'
+            f"{cell}</th>"
         )
 
     run_status_cells = ""
@@ -409,9 +412,11 @@ def _render_heatmap_table(data: Dict) -> str:
         'background:#238636; border-radius:2px; vertical-align:middle;"></span> passed '
         '<span style="display:inline-block; width:10px; height:10px; '
         'background:#21262d; border-radius:2px; vertical-align:middle;"></span> no failure.'
+        " A red <b>Run status</b> with no test cells below it means the run "
+        "failed on build / sanitizer / setup / timeout — no individual test failed."
         "</caption>"
     )
-    return f"""<table>
+    return f"""<div class="heatmap-scroll"><table>
   {caption}
   <thead>
     <tr><th class="test-name">Test</th><th class="freq" title="{recent_ttl}">{recent_hdr}</th><th class="freq" title="Failure rate over last 90 days">90d</th>{date_headers}</tr>
@@ -420,7 +425,7 @@ def _render_heatmap_table(data: Dict) -> str:
   <tbody>
     {test_rows}
   </tbody>
-</table>"""
+</table></div>"""
 
 
 def render_html(data: Dict, ci_data: Dict | None = None) -> str:
@@ -440,7 +445,7 @@ def render_html(data: Dict, ci_data: Dict | None = None) -> str:
             f'<h3 class="wf-title">CI · last {n_ci} merge runs (per commit) '
             "— freshest signal</h3>"
             + _render_heatmap_table(ci_data)
-            + '<details class="wf-daily"><summary>Daily · nightly full suite '
+            + '<details class="wf-daily" open><summary>Daily · nightly full suite '
             f"(last {summary.get('days', 14)} days)</summary>"
             + _render_heatmap_table(data)
             + "</details>"
@@ -1061,7 +1066,7 @@ ${styles}
 <body>
 <h1>Valkey CI Failure Report</h1>
 <p class="meta">${workflow} · ${branch} · ${repo} · last ${days} days · generated ${generated}</p>
-<p class="hint">Daily CI failure trends for the <b>${branch}</b> branch. Tracks which tests fail, how often, and whether they are getting better or worse.</p>
+<p class="hint">Valkey CI failure trends for the <b>${branch}</b> branch — nightly Daily suite and per-commit CI. Tracks which tests fail, how often, and whether they are getting better or worse.</p>
 
 <div class="stats">
   <div class="stat"><div class="stat-val">${total_runs}</div><div class="stat-label">runs</div></div>
@@ -1121,8 +1126,8 @@ ${heatmap_body}
 
 <div class="tab-panel" id="tab-rundetails" role="tabpanel">
 <div class="section">
-  <h2>Run Details (newest first)</h2>
-  <p class="hint">Each row is one daily CI run. Status shows failed/total jobs. Numbered links like [1][2] go to the specific job logs on GitHub. Hover over a commit SHA to see the commit message.</p>
+  <h2>Run Details — Daily workflow (newest first)</h2>
+  <p class="hint">Each row is one nightly <b>Daily</b>-workflow run. This tab covers the Daily workflow only; per-commit CI detail lives in the Heatmap and Regressions tabs. Status shows failed/total jobs. Numbered links like [1][2] go to the specific job logs on GitHub. Hover over a commit SHA to see the commit message.</p>
   <table class="detail-table">
     <thead><tr><th>Date</th><th>Status</th><th>Commit</th><th>#</th><th>Unique Failures</th><th>Failed Jobs</th><th>Commits since prev run</th></tr></thead>
     <tbody>${run_detail_rows}</tbody>

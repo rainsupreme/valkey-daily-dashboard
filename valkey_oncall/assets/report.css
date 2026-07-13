@@ -90,3 +90,9 @@ pre { background: #161b22; padding: 12px; border-radius: 6px; overflow-x: auto;
 .wf-title{font-size:0.95rem;font-weight:600;margin:16px 0 6px;color:#adbac7;border-top:1px solid #21262d;padding-top:10px}
 .wf-daily>summary{cursor:pointer;color:#8b949e;font-size:0.9rem;margin:10px 0}
 .wf-daily[open]>summary{margin-bottom:6px}
+
+/* Horizontal scroll for wide (CI per-commit) heatmaps */
+.heatmap-scroll{overflow-x:auto;max-width:100%}
+/* Rotated per-commit column headers (SHAs) — 90° counter-clockwise */
+.date-col.rot{height:58px;padding:2px 1px;vertical-align:bottom;text-align:center}
+.date-col.rot span{display:inline-block;transform:rotate(-90deg);white-space:nowrap;font-size:0.7rem;line-height:1;font-family:monospace}
