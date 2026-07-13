@@ -417,7 +417,9 @@ def _render_heatmap_table(data: Dict) -> str:
         "</caption>"
     )
     scroll_cls = "heatmap-scroll scroll-right" if per_run else "heatmap-scroll"
-    return f"""<div class="{scroll_cls}"><table>
+    wrap_open = '<div class="heatmap-scroll-wrap has-fade">' if per_run else ""
+    wrap_close = "</div>" if per_run else ""
+    return f"""{wrap_open}<div class="{scroll_cls}"><table>
   {caption}
   <thead>
     <tr><th class="test-name">Test</th><th class="freq" title="{recent_ttl}">{recent_hdr}</th><th class="freq" title="Failure rate over last 90 days">90d</th>{date_headers}</tr>
@@ -426,7 +428,7 @@ def _render_heatmap_table(data: Dict) -> str:
   <tbody>
     {test_rows}
   </tbody>
-</table></div>"""
+</table></div>{wrap_close}"""
 
 
 def render_html(data: Dict, ci_data: Dict | None = None) -> str:

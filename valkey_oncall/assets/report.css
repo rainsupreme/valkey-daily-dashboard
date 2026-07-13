@@ -93,6 +93,23 @@ pre { background: #161b22; padding: 12px; border-radius: 6px; overflow-x: auto;
 
 /* Horizontal scroll for wide (CI per-commit) heatmaps */
 .heatmap-scroll{overflow-x:auto;max-width:100%}
-/* Rotated per-commit column headers (SHAs) — 90° counter-clockwise */
-.date-col.rot{height:58px;padding:2px 1px;vertical-align:bottom;text-align:center}
-.date-col.rot span{display:inline-block;transform:rotate(-90deg);white-space:nowrap;font-size:0.7rem;line-height:1;font-family:monospace}
+/* CI heatmap: always show a scrollbar with a visible thumb so off-screen
+   content is discoverable even on overlay-scrollbar platforms. */
+.heatmap-scroll.scroll-right{overflow-x:scroll;scrollbar-width:thin;scrollbar-color:#8b949e #21262d}
+.heatmap-scroll.scroll-right::-webkit-scrollbar{height:12px}
+.heatmap-scroll.scroll-right::-webkit-scrollbar-track{background:#21262d;border-radius:6px}
+.heatmap-scroll.scroll-right::-webkit-scrollbar-thumb{background:#8b949e;border-radius:6px;border:2px solid #21262d}
+.heatmap-scroll.scroll-right::-webkit-scrollbar-thumb:hover{background:#adbac7}
+/* Left/right edge fades signalling hidden columns (toggled by JS on scroll) */
+.heatmap-scroll-wrap{position:relative}
+.heatmap-scroll-wrap::before,.heatmap-scroll-wrap::after{content:"";position:absolute;top:0;bottom:14px;width:40px;pointer-events:none;opacity:0;transition:opacity .15s;z-index:2}
+.heatmap-scroll-wrap::before{left:0;background:linear-gradient(to right,#0d1117,rgba(13,17,23,0))}
+.heatmap-scroll-wrap::after{right:0;background:linear-gradient(to left,#0d1117,rgba(13,17,23,0))}
+.heatmap-scroll-wrap.show-left::before{opacity:1}
+.heatmap-scroll-wrap.show-right::after{opacity:1}
+/* Rotated per-commit column headers (SHAs) — read bottom-to-top, sharing a
+   uniform bottom baseline and growing upward so they never overlap Run status.
+   writing-mode reserves real box space (unlike a bare transform), which is
+   what keeps the labels out of the row below. */
+.date-col.rot{vertical-align:bottom;text-align:center;padding:4px 0 3px}
+.date-col.rot span{display:inline-block;writing-mode:vertical-rl;transform:rotate(180deg);white-space:nowrap;font-size:0.7rem;line-height:1.1;font-family:monospace}
