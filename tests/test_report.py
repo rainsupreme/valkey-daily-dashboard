@@ -493,3 +493,81 @@ class TestHeatmapMethodologyNote:
         # Injected gate constants (kept DRY via template vars).
         assert "90% credible interval" in heat
         assert "5%" in heat
+
+
+class TestDualWorkflowRender:
+    """CI (per-run) stacks on top of Daily across the tabs, with guardrails."""
+
+    def _ci_cache(self, cache):
+        base = datetime(2026, 7, 12, 6, 0, 0, tzinfo=timezone.utc)
+        for i in range(20):
+            ts = (base + timedelta(minutes=20 * i)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            fail = i >= 15
+            cache.store_runs(
+                [
+                    {
+                        "run_id": 500 + i,
+                        "repo": "valkey-io/valkey",
+                        "workflow_file": "ci.yml",
+                        "status": "failure" if fail else "success",
+                        "branch": "unstable",
+                        "commit_sha": f"abc{i:03d}def",
+                        "run_date": ts,
+                    }
+                ]
+            )
+            cache.store_jobs(
+                500 + i,
+                [
+                    {
+                        "job_id": 600 + i,
+                        "name": "build",
+                        "status": "completed",
+                        "conclusion": "failure" if fail else "success",
+                    }
+                ],
+            )
+            if fail:
+                cache.store_failures(
+                    600 + i,
+                    [
+                        {
+                            "test_name": "ci regr in tests/unit/b.tcl",
+                            "error_summary": "e",
+                            "log_lines": "x",
+                        }
+                    ],
+                )
+
+    def test_ci_on_top_and_guardrails(self, cache):
+        _store_failure(cache, 1, 2, _day(0), "daily regr in tests/unit/a.tcl")
+        daily = generate_report_data(cache, days=14)
+        import tempfile
+
+        ci_cache = Cache(tempfile.mktemp(suffix=".ci.db"))
+        self._ci_cache(ci_cache)
+        ci = generate_report_data(
+            ci_cache, workflow="ci.yml", per_run=True, max_runs=50
+        )
+
+        html = render_html(daily, ci_data=ci)
+        # CI heading appears before the Daily heading in the heatmap.
+        assert 0 < html.find("CI · last") < html.find("Daily · nightly full suite")
+        assert "Columns are merge runs (one per commit)" in html  # CI caption
+        assert "Columns are days" in html  # Daily caption
+        assert 'class="wf-daily"' in html  # Daily heatmap collapsed
+        assert "CI · per-commit regressions" in html
+        # Single interactive scorecard body (Daily) -> no JS id collision.
+        assert html.count('id="scorecard-body"') == 1
+        # Shared methodology notes, one each.
+        assert html.count("What the ⚠️ means") == 1
+        assert html.count("How this works") == 1
+        assert html.count("<div") == html.count("</div>")
+        assert html.count("<details") == html.count("</details>")
+
+    def test_daily_only_render_unchanged(self, cache):
+        _store_failure(cache, 1, 2, _day(0), "x in tests/unit/a.tcl")
+        html = render_html(generate_report_data(cache, days=14))
+        assert "Columns are days" in html
+        assert "CI · " not in html
+        assert 'class="wf-daily"' not in html
