@@ -21,6 +21,7 @@ from valkey_oncall.scorecard import (
     compute_scorecards,
 )
 from valkey_oncall.stats import regression_rate_lower_bound
+from valkey_oncall.windowing import run_key, select_runs
 
 _ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 logger = logging.getLogger(__name__)
@@ -86,33 +87,29 @@ def generate_report_data(
     workflow: str = "daily.yml",
     repo: str = "valkey-io/valkey",
     client=None,
+    per_run: bool = False,
+    max_runs: int = 50,
 ) -> Dict:
     """Build the data structure for the failure trend report.
 
     If *client* (a ``GitHubActionsClient``) is provided, the report will
     include the list of commits between consecutive runs.
+
+    With ``per_run=True`` (CI mode), every completed run is its own column and
+    the window is the last ``max_runs`` runs. Otherwise (Daily mode) runs are
+    deduplicated to one per calendar day over the last ``days`` days.
     """
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
-        "%Y-%m-%dT00:00:00Z"
-    )
-
-    all_runs = cache.query_runs(
-        repo=repo, workflow=workflow, branch=branch, since=since
-    )
-    # Keep only completed scheduled runs (one per day, skip duplicates)
-    seen_dates: set[str] = set()
-    runs: List[Dict] = []
-    for r in all_runs:
-        if r["status"] in ("in_progress", "queued", "skipped", "action_required"):
-            continue
-        date_key = r["run_date"][:10]
-        if date_key in seen_dates:
-            continue
-        seen_dates.add(date_key)
-        runs.append(r)
-
-    # Oldest first for the timeline
-    runs.sort(key=lambda r: r["run_date"])
+    if per_run:
+        all_runs = cache.query_runs(repo=repo, workflow=workflow, branch=branch)
+        runs = select_runs(all_runs, per_run=True)[-max_runs:]
+    else:
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
+            "%Y-%m-%dT00:00:00Z"
+        )
+        all_runs = cache.query_runs(
+            repo=repo, workflow=workflow, branch=branch, since=since
+        )
+        runs = select_runs(all_runs, per_run=False)
 
     # For each run, gather jobs and failures
     run_details: List[Dict] = []
@@ -121,13 +118,14 @@ def generate_report_data(
 
     for run in runs:
         rid = run["run_id"]
-        date_key = run["run_date"][:10]
+        date_key = run_key(run, per_run)
         all_jobs = cache.query_jobs(rid)
         failed_jobs = cache.query_jobs(rid, failed_only=True)
 
         run_info = {
             "run_id": rid,
             "date": date_key,
+            "day": run["run_date"][:10],
             "status": run["status"],
             "commit_sha": run.get("commit_sha", ""),
             "total_jobs": len(all_jobs),
@@ -179,6 +177,26 @@ def generate_report_data(
     sorted_tests = sorted(test_totals.keys(), key=lambda n: -test_totals[n])
 
     dates = [r["date"] for r in run_details]
+
+    # Per-column descriptors so the renderer can label headers generically:
+    # per-day mode -> M/D label; per-run mode -> short commit SHA.
+    columns: List[Dict] = []
+    for r in run_details:
+        key = r["date"]
+        day = r.get("day", key[:10])
+        if per_run:
+            sha = r.get("commit_sha", "") or ""
+            columns.append(
+                {
+                    "key": key,
+                    "label": sha[:7] if sha else day,
+                    "title": f"{day} · {sha[:10]}" if sha else day,
+                }
+            )
+        else:
+            columns.append(
+                {"key": key, "label": f"{int(key[5:7])}/{int(key[8:10])}", "title": key}
+            )
 
     # Record each run's previous SHA so the report can render a GitHub compare
     # link (needs no API/token) even when commit lists aren't fetched.
@@ -247,6 +265,8 @@ def generate_report_data(
 
     return {
         "dates": dates,
+        "columns": columns,
+        "per_run": per_run,
         "runs": run_details,
         "tests": {
             name: {
@@ -274,53 +294,77 @@ def generate_report_data(
         # Full 90-day flakiness roster (the "board of shame"), independent of
         # the recent-window heatmap above. Ranked worst-first by compute_scorecards.
         "scorecard": compute_scorecards(
-            cache, days=90, branch=branch, workflow=workflow, repo=repo
+            cache,
+            days=90,
+            branch=branch,
+            workflow=workflow,
+            repo=repo,
+            per_run=per_run,
+            max_runs=max_runs,
         ),
         # Detected green->red regressions (blame). compute_blame is client-safe:
         # without commit-API access, blame_commits is empty but the transition
         # SHAs remain, which is all the compare-link view needs.
         "regressions": compute_blame(
-            cache, client, days=90, branch=branch, workflow=workflow, repo=repo
+            cache,
+            client,
+            days=90,
+            branch=branch,
+            workflow=workflow,
+            repo=repo,
+            per_run=per_run,
+            max_runs=max_runs,
         ),
     }
 
 
-def render_html(data: Dict) -> str:
-    """Render the report data as a self-contained HTML file."""
-    summary = data["summary"]
-    dates = data["dates"]
-    tests = data["tests"]
-    runs = data["runs"]
-    repo = summary.get("repo", "valkey-io/valkey")
+def _render_heatmap_table(data: Dict) -> str:
+    """Render one workflow's failure heatmap as a self-contained <table>.
 
-    # Likely-regression lookup for heatmap warning markers.
+    Column headers come from ``data['columns']`` (M/D in per-day mode, short
+    commit SHA in per-run mode); warning markers are computed from this
+    dataset's own regressions.
+    """
+    columns = data.get("columns") or [
+        {"key": k, "label": k, "title": k} for k in data.get("dates", [])
+    ]
+    dates = data.get("dates", [])
+    tests = data.get("tests", {})
+    per_run = data.get("per_run", False)
+    runs = data.get("runs", [])
     reg_warnings = _regression_warnings(data.get("regressions", []))
-    _reg_by_name = {r["test_name"]: r for r in data.get("regressions", [])}
+    reg_by_name = {r["test_name"]: r for r in data.get("regressions", [])}
 
-    # Build date headers — M/D format, no leading zeros
     date_headers = ""
-    for d in dates:
-        month = int(d[5:7])
-        day = int(d[8:10])
-        date_headers += f'<th class="date-col" title="{d}">{month}/{day}</th>'
+    for c in columns:
+        date_headers += (
+            f'<th class="date-col" title="{html.escape(c.get("title", c["key"]))}">'
+            f"{html.escape(c.get('label', c['key']))}</th>"
+        )
 
-    # Build run status row (overall pass/fail per day)
     run_status_cells = ""
     for run in runs:
         cls = "pass" if run["status"] == "success" else "fail"
-        title = f"{run['date']}: {run['status']} ({run['failed_jobs']}/{run['total_jobs']} jobs failed)"
+        day = run.get("day", run["date"][:10])
+        title = (
+            f"{day}: {run['status']} "
+            f"({run['failed_jobs']}/{run['total_jobs']} jobs failed)"
+        )
         run_status_cells += f'<td class="cell {cls}" title="{html.escape(title)}"></td>'
 
-    # Build test rows
+    recent_hdr = "win" if per_run else "14d"
+    recent_ttl = (
+        "Failure rate across the shown run window"
+        if per_run
+        else "Failure rate over last 14 days"
+    )
+
     test_rows = ""
     for test_name, info in tests.items():
-        # Shorten the display name
         short_name = _short_test_name(test_name)
         freq_pct = round(info["days_failed"] / len(dates) * 100) if dates else 0
-        freq = f"{freq_pct}%"
         score_90d = info.get("score_90d", 0)
         score_str = f"{score_90d:.0f}%" if score_90d >= 1 else f"{score_90d:.1f}%"
-
         cells = ""
         for d in dates:
             entry = info["timeline"][d]
@@ -332,25 +376,77 @@ def render_html(data: Dict) -> str:
                 if len(entry["jobs"]) > 3:
                     jobs += f" +{len(entry['jobs']) - 3}"
                 errs = "; ".join(entry["errors"][:2])
-                tip = html.escape(f"{n}x on {d}\nJobs: {jobs}\nError: {errs}")
+                tip = html.escape(f"{n}x\nJobs: {jobs}\nError: {errs}")
                 cells += f'<td class="cell fail" title="{tip}">{n}</td>'
-
         warn_lb = reg_warnings.get(test_name)
         warn_marker = ""
         if warn_lb is not None:
-            onset = _reg_by_name.get(test_name, {}).get("regression_date", "?")
+            onset = reg_by_name.get(test_name, {}).get("regression_date", "?")
             wtip = html.escape(
                 f"Likely regression — 90% confident it now fails "
                 f">={warn_lb * 100:.0f}% of runs since {onset}. Click for details."
             )
             warn_marker = f'<a class="regwarn" href="#regressions" title="{wtip}">⚠️</a>'
-
         test_rows += f"""<tr>
             <td class="test-name" title="{html.escape(test_name)}">{warn_marker}{html.escape(short_name)}</td>
-            <td class="freq">{freq}</td>
+            <td class="freq">{freq_pct}%</td>
             <td class="freq" title="Failed {score_90d:.1f}% of runs in last 90 days">{score_str}</td>
             {cells}
         </tr>"""
+
+    if per_run:
+        cap_lead = "Columns are merge runs (one per commit)"
+    else:
+        cap_lead = "Columns are days"
+    caption = (
+        '<caption class="hint" style="text-align:left; caption-side:top; '
+        'margin-bottom:8px;">'
+        f"{cap_lead}, rows are unique test failures. Each cell shows how many "
+        "jobs hit that failure. "
+        '<span style="display:inline-block; width:10px; height:10px; '
+        'background:#da3633; border-radius:2px; vertical-align:middle;"></span> failed '
+        '<span style="display:inline-block; width:10px; height:10px; '
+        'background:#238636; border-radius:2px; vertical-align:middle;"></span> passed '
+        '<span style="display:inline-block; width:10px; height:10px; '
+        'background:#21262d; border-radius:2px; vertical-align:middle;"></span> no failure.'
+        "</caption>"
+    )
+    return f"""<table>
+  {caption}
+  <thead>
+    <tr><th class="test-name">Test</th><th class="freq" title="{recent_ttl}">{recent_hdr}</th><th class="freq" title="Failure rate over last 90 days">90d</th>{date_headers}</tr>
+    <tr><td class="test-name" style="color:#8b949e">Run status</td><td></td><td></td>{run_status_cells}</tr>
+  </thead>
+  <tbody>
+    {test_rows}
+  </tbody>
+</table>"""
+
+
+def render_html(data: Dict, ci_data: Dict | None = None) -> str:
+    """Render the report data as a self-contained HTML file.
+
+    *data* is the Daily (nightly, per-day) report. When *ci_data* (the CI,
+    per-run report) is provided, each tab stacks the CI view on top of Daily.
+    """
+    summary = data["summary"]
+    runs = data["runs"]
+    repo = summary.get("repo", "valkey-io/valkey")
+
+    # --- Heatmap panel body: CI on top, Daily below (collapsed) ---
+    if ci_data:
+        n_ci = len(ci_data.get("columns", []))
+        heatmap_body = (
+            f'<h3 class="wf-title">CI · last {n_ci} merge runs (per commit) '
+            "— freshest signal</h3>"
+            + _render_heatmap_table(ci_data)
+            + '<details class="wf-daily"><summary>Daily · nightly full suite '
+            f"(last {summary.get('days', 14)} days)</summary>"
+            + _render_heatmap_table(data)
+            + "</details>"
+        )
+    else:
+        heatmap_body = _render_heatmap_table(data)
 
     # Build per-run detail rows for the bottom table
     run_detail_rows = ""
@@ -429,6 +525,40 @@ def render_html(data: Dict) -> str:
     regressions_rows = _render_regression_rows(ongoing, repo)
     fixed_regressions = _render_fixed_regressions(fixed, repo)
 
+    # --- CI (per-run) blocks stacked ABOVE the Daily views ---
+    _SC_HEAD = (
+        "<thead><tr><th>#</th><th>Test</th><th>Class</th><th>Trend</th>"
+        "<th>Category</th><th>Rate</th><th>Days</th>"
+        "<th>Recent activity</th></tr></thead>"
+    )
+    _REG_HEAD = (
+        "<thead><tr><th>Test</th><th>First failed</th><th>Last passed</th>"
+        "<th>Suspect range</th><th>Baseline</th><th>Surprise</th>"
+        "<th>Onset</th><th>Post-onset</th></tr></thead>"
+    )
+    ci_scorecard = ""
+    ci_regressions = ""
+    if ci_data:
+        ci_sc = ci_data.get("scorecard", {}).get("scorecards", [])
+        ci_active = [s for s in ci_sc if not s.get("resolved")]
+        ci_scorecard = (
+            '<h3 class="wf-title">CI · per-commit flakiness</h3>'
+            '<table class="scorecard-table">'
+            f"{_SC_HEAD}<tbody>{_render_scorecard_rows(ci_active)}</tbody></table>"
+            '<h3 class="wf-title">Daily · nightly full suite</h3>'
+        )
+        ci_regs = ci_data.get("regressions", [])
+        ci_ongoing = [r for r in ci_regs if r.get("ongoing", True)]
+        ci_fixed = [r for r in ci_regs if not r.get("ongoing", True)]
+        ci_regressions = (
+            '<h3 class="wf-title">CI · per-commit regressions</h3>'
+            '<table class="scorecard-table">'
+            f"{_REG_HEAD}<tbody>{_render_regression_rows(ci_ongoing, repo)}</tbody>"
+            "</table>"
+            f"{_render_fixed_regressions(ci_fixed, repo)}"
+            '<h3 class="wf-title">Daily · nightly full suite</h3>'
+        )
+
     return Template(_HTML_TEMPLATE).substitute(
         styles=_asset("report.css"),
         script=_asset("report.js"),
@@ -440,9 +570,9 @@ def render_html(data: Dict) -> str:
         failed_runs=summary["failed_runs"],
         unique_tests=summary["unique_tests_failed"],
         generated=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-        date_headers=date_headers,
-        run_status_cells=run_status_cells,
-        test_rows=test_rows,
+        heatmap_body=heatmap_body,
+        ci_scorecard=ci_scorecard,
+        ci_regressions=ci_regressions,
         run_detail_rows=run_detail_rows,
         scorecard_rows=scorecard_rows,
         resolved_section=resolved_section,
@@ -947,22 +1077,7 @@ ${styles}
 </div>
 
 <div class="tab-panel active" id="tab-heatmap" role="tabpanel">
-<table>
-  <caption class="hint" style="text-align:left; caption-side:top; margin-bottom:8px;">
-    Columns are days, rows are unique test failures. Each cell shows how many jobs hit that failure on that day.
-    <span style="display:inline-block; width:10px; height:10px; background:#da3633; border-radius:2px; vertical-align:middle;"></span> failed
-    <span style="display:inline-block; width:10px; height:10px; background:#238636; border-radius:2px; vertical-align:middle;"></span> passed
-    <span style="display:inline-block; width:10px; height:10px; background:#21262d; border-radius:2px; vertical-align:middle;"></span> no failure.
-    Freq = days failed / total days.
-  </caption>
-  <thead>
-    <tr><th class="test-name">Test</th><th class="freq" title="Failure rate over last 14 days">14d</th><th class="freq" title="Failure rate over last 90 days">90d</th>${date_headers}</tr>
-    <tr><td class="test-name" style="color:#8b949e">Run status</td><td></td><td></td>${run_status_cells}</tr>
-  </thead>
-  <tbody>
-    ${test_rows}
-  </tbody>
-</table>
+${heatmap_body}
   <details class="methodology">
     <summary>What the ⚠️ means</summary>
     <div class="hint">
@@ -983,6 +1098,7 @@ ${styles}
     Trend: <span class="trend-up">↑</span> worse / <span class="trend-down">↓</span> better / <span class="trend-flat">→</span> flat (recent window).
     Greyed rows are cooling off (no failure in the last ${cooling_runs}+ runs); tests quiet for ${resolved_runs}+ runs drop to the collapsed <b>Resolved</b> sub-list below. The activity sparkline shows per-day failure counts over the recent window.
   </p>
+  ${ci_scorecard}
   <div id="scorecard-controls">
     <label>Class:
       <select id="sc-class"><option value="">all</option><option value="persistent">persistent</option><option value="flaky">flaky</option><option value="rare">rare</option></select>
@@ -1025,6 +1141,7 @@ ${styles}
     <span class="badge-rare">—</span> (no clean pre-onset history).
     Post-onset = share of runs that failed since the transition. Hover a confidence badge for details.
   </p>
+  ${ci_regressions}
   <table class="scorecard-table">
     <thead><tr><th>Test</th><th>First failed</th><th>Last passed</th><th>Suspect range</th><th title="learned baseline fail rate (posterior mean)">Baseline</th><th title="surprise vs baseline (100% − burst probability)">Surprise</th><th title="pass/fail across the window; amber tick marks the onset run">Onset</th><th title="share of runs failed since onset">Post-onset</th></tr></thead>
     <tbody>${regressions_rows}</tbody>

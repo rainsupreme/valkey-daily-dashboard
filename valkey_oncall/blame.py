@@ -10,6 +10,7 @@ from typing import Dict, List
 from valkey_oncall.cache import Cache
 from valkey_oncall.github_client import GitHubActionsClient
 from valkey_oncall.stats import regression_confidence
+from valkey_oncall.windowing import run_key, select_runs
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,8 @@ def compute_blame(
     branch: str = "unstable",
     workflow: str = "daily.yml",
     repo: str = "valkey-io/valkey",
+    per_run: bool = False,
+    max_runs: int = 50,
 ) -> List[Dict]:
     """For each test that has a green→red transition, identify blame candidates.
 
@@ -35,22 +38,19 @@ def compute_blame(
 
     Returns a list of blame records sorted by recency (newest regressions first).
     """
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
-        "%Y-%m-%dT00:00:00Z"
-    )
-
-    runs = cache.query_runs(repo=repo, workflow=workflow, branch=branch, since=since)
-    # Deduplicate, sort chronologically
-    seen_dates: set = set()
-    valid_runs: List[Dict] = []
-    for r in sorted(runs, key=lambda x: x["run_date"]):
-        if r["status"] in ("in_progress", "queued", "skipped"):
-            continue
-        date_key = r["run_date"][:10]
-        if date_key in seen_dates:
-            continue
-        seen_dates.add(date_key)
-        valid_runs.append(r)
+    # Detection window: per-run keeps the last max_runs runs; per-day dedups
+    # to one per day over the last `days` days.
+    if per_run:
+        window_runs = cache.query_runs(repo=repo, workflow=workflow, branch=branch)
+        valid_runs = select_runs(window_runs, per_run=True)[-max_runs:]
+    else:
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
+            "%Y-%m-%dT00:00:00Z"
+        )
+        window_runs = cache.query_runs(
+            repo=repo, workflow=workflow, branch=branch, since=since
+        )
+        valid_runs = select_runs(window_runs, per_run=False)
 
     if not valid_runs:
         return []
@@ -65,25 +65,16 @@ def compute_blame(
                 failing.add(f["test_name"])
         run_failures.append({"run": run, "failing_tests": failing})
 
-    # All-history per-test failing dates, for the prior-aware confidence
+    # All-history per-test failing keys, for the prior-aware confidence
     # baseline: a test's flakiness BEFORE onset (not just within the detection
     # window). The windowed pre-onset is trivially clean -- onset IS the first
     # in-window failure -- so a known flake would look novel without this.
     all_runs = cache.query_runs(repo=repo, workflow=workflow, branch=branch)
-    hist_seen: set = set()
-    hist_valid: List[Dict] = []
-    for r in sorted(all_runs, key=lambda x: x["run_date"]):
-        if r["status"] in ("in_progress", "queued", "skipped"):
-            continue
-        dk = r["run_date"][:10]
-        if dk in hist_seen:
-            continue
-        hist_seen.add(dk)
-        hist_valid.append(r)
-    all_dates = sorted(hist_seen)
+    hist_valid = select_runs(all_runs, per_run=per_run)
+    all_dates = [run_key(r, per_run) for r in hist_valid]
     hist_fail_dates: Dict[str, set] = defaultdict(set)
     for run in hist_valid:
-        dk = run["run_date"][:10]
+        dk = run_key(run, per_run)
         for job in cache.query_jobs(run["run_id"], failed_only=True):
             for f in cache.query_failures(job_id=job["job_id"]):
                 hist_fail_dates[f["test_name"]].add(dk)
@@ -164,8 +155,8 @@ def compute_blame(
                     "onset_index": 0,
                     "history_series": history_series,
                     "history_onset_index": (
-                        all_dates.index(run_failures[0]["run"]["run_date"][:10])
-                        if run_failures[0]["run"]["run_date"][:10] in all_dates
+                        all_dates.index(run_key(run_failures[0]["run"], per_run))
+                        if run_key(run_failures[0]["run"], per_run) in all_dates
                         else 0
                     ),
                     "note": "Already failing at start of window — extend --days for full history",
@@ -193,7 +184,7 @@ def compute_blame(
                 )
 
         conf_label, burst_p, p0_hat = _confidence(
-            test_name, first_fail["run_date"][:10]
+            test_name, run_key(first_fail, per_run)
         )
         quiet = _quiet_runs(test_name)
         blame_records.append(
@@ -215,8 +206,8 @@ def compute_blame(
                 "onset_index": first_fail_idx,
                 "history_series": history_series,
                 "history_onset_index": (
-                    all_dates.index(first_fail["run_date"][:10])
-                    if first_fail["run_date"][:10] in all_dates
+                    all_dates.index(run_key(first_fail, per_run))
+                    if run_key(first_fail, per_run) in all_dates
                     else 0
                 ),
             }

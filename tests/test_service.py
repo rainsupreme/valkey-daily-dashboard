@@ -205,8 +205,22 @@ class TestSyncOrchestration:
         svc = OnCallService(client, cache)
         summary = svc.sync()
 
-        # Should call get_workflow_runs for both daily and weekly
-        assert client.get_workflow_runs.call_count == 2
+        # Should call get_workflow_runs for each registered workflow
+        # (daily, weekly, ci).
+        assert client.get_workflow_runs.call_count == 3
+        fetched = {
+            c.kwargs.get("workflow_file")
+            for c in client.get_workflow_runs.call_args_list
+        }
+        assert fetched == {"daily.yml", "weekly.yml", "ci.yml"}
+        # CI is fetched with the post-merge (push) event filter; the others
+        # are unfiltered (all events).
+        events = {
+            c.kwargs.get("workflow_file"): c.kwargs.get("event")
+            for c in client.get_workflow_runs.call_args_list
+        }
+        assert events["ci.yml"] == "push"
+        assert events["daily.yml"] is None
         assert summary["new_runs_fetched"] == 0
         assert summary["errors"] == []
 

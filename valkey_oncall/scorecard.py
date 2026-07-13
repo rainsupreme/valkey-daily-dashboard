@@ -8,6 +8,7 @@ from typing import Dict, List
 
 from valkey_oncall.cache import Cache
 from valkey_oncall.log_parser import sanitize_cached_failure
+from valkey_oncall.windowing import run_key, select_runs
 
 # A test failing this many most-recent CI days in a row is treated as an
 # active regression ("persistent") rather than a flake, even if its
@@ -118,6 +119,8 @@ def compute_scorecards(
     branch: str = "unstable",
     workflow: str = "daily.yml",
     repo: str = "valkey-io/valkey",
+    per_run: bool = False,
+    max_runs: int = 50,
 ) -> Dict:
     """Compute per-test flakiness scorecards.
 
@@ -134,29 +137,22 @@ def compute_scorecards(
     Returns a dict with metadata and a list of test scorecards sorted by
     failure rate (descending).
     """
-    # Rate/roster span ALL cached runs; trend/sparkline span the last `days`.
+    # Rate/roster span ALL cached runs; trend/sparkline span the recent window.
     runs = cache.query_runs(repo=repo, workflow=workflow, branch=branch)
-    # Deduplicate to one run per day, skip in-progress
-    seen_dates: set = set()
-    valid_runs: List[Dict] = []
-    for r in sorted(runs, key=lambda x: x["run_date"]):
-        if r["status"] in ("in_progress", "queued", "skipped"):
-            continue
-        date_key = r["run_date"][:10]
-        if date_key in seen_dates:
-            continue
-        seen_dates.add(date_key)
-        valid_runs.append(r)
+    valid_runs = select_runs(runs, per_run=per_run)
 
     if not valid_runs:
         return {"meta": {"days": days, "total_runs": 0}, "scorecards": []}
 
-    all_dates = sorted(seen_dates)
+    all_dates = [run_key(r, per_run) for r in valid_runs]
     total_runs = len(valid_runs)
-    recent_cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
-        "%Y-%m-%d"
-    )
-    recent_dates = [d for d in all_dates if d >= recent_cutoff]
+    if per_run:
+        recent_dates = all_dates[-max_runs:]
+    else:
+        recent_cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
+            "%Y-%m-%d"
+        )
+        recent_dates = [d for d in all_dates if d >= recent_cutoff]
 
     # Gather failures per test per date
     # test_name -> {date -> count}
@@ -166,7 +162,7 @@ def compute_scorecards(
     test_last_seen: Dict[str, str] = {}
 
     for run in valid_runs:
-        date_key = run["run_date"][:10]
+        date_key = run_key(run, per_run)
         jobs = cache.query_jobs(run["run_id"], failed_only=True)
         for job in jobs:
             failures = cache.query_failures(job_id=job["job_id"])

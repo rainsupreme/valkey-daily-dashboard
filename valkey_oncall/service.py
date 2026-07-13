@@ -23,6 +23,15 @@ ProgressCallback = Optional[Callable[[str], None]]
 _WORKFLOW_FILES = {
     "daily": "daily.yml",
     "weekly": "weekly.yml",
+    "ci": "ci.yml",
+}
+
+# Trigger-event filter per workflow file. CI (ci.yml) fires on every push and
+# every PR; we only want post-merge runs on the target branch, so we restrict
+# it to the "push" event. Workflows absent from this map are fetched
+# unfiltered (all events).
+_WORKFLOW_EVENTS = {
+    "ci.yml": "push",
 }
 
 
@@ -103,6 +112,7 @@ class OnCallService:
             branch=branch,
             created_after=since,
             created_before=until,
+            event=_WORKFLOW_EVENTS.get(workflow_file),
         )
         new_runs: List[Dict] = []
         for raw in api_runs:
@@ -307,6 +317,7 @@ class OnCallService:
                     branch=branch,
                     created_after=since,
                     created_before=until,
+                    event=_WORKFLOW_EVENTS.get(workflow_file),
                 )
                 new_runs: List[Dict] = []
                 for raw in api_runs:

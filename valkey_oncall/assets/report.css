@@ -86,3 +86,7 @@ pre { background: #161b22; padding: 12px; border-radius: 6px; overflow-x: auto;
 #scorecard-controls button:hover { background:#21262d; }
 
 .regwarn{text-decoration:none;margin-right:5px;cursor:pointer;font-size:0.85rem}
+
+.wf-title{font-size:0.95rem;font-weight:600;margin:16px 0 6px;color:#adbac7;border-top:1px solid #21262d;padding-top:10px}
+.wf-daily>summary{cursor:pointer;color:#8b949e;font-size:0.9rem;margin:10px 0}
+.wf-daily[open]>summary{margin-bottom:6px}
