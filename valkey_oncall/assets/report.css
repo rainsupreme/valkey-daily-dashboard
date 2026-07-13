@@ -95,11 +95,11 @@ pre { background: #161b22; padding: 12px; border-radius: 6px; overflow-x: auto;
 .heatmap-scroll{overflow-x:auto;max-width:100%}
 /* CI heatmap: always show a scrollbar with a visible thumb so off-screen
    content is discoverable even on overlay-scrollbar platforms. */
-.heatmap-scroll.scroll-right{overflow-x:scroll;scrollbar-width:thin;scrollbar-color:#586069 #161b22}
+.heatmap-scroll.scroll-right{overflow-x:scroll;scrollbar-width:thin;scrollbar-color:#8b949e #21262d}
 .heatmap-scroll.scroll-right::-webkit-scrollbar{height:12px}
-.heatmap-scroll.scroll-right::-webkit-scrollbar-track{background:#161b22;border-radius:6px}
-.heatmap-scroll.scroll-right::-webkit-scrollbar-thumb{background:#586069;border-radius:6px;border:2px solid #161b22}
-.heatmap-scroll.scroll-right::-webkit-scrollbar-thumb:hover{background:#6e7681}
+.heatmap-scroll.scroll-right::-webkit-scrollbar-track{background:#21262d;border-radius:6px}
+.heatmap-scroll.scroll-right::-webkit-scrollbar-thumb{background:#8b949e;border-radius:6px;border:2px solid #21262d}
+.heatmap-scroll.scroll-right::-webkit-scrollbar-thumb:hover{background:#adbac7}
 /* Left/right edge fades signalling hidden columns (toggled by JS on scroll) */
 .heatmap-scroll-wrap{position:relative}
 .heatmap-scroll-wrap::before,.heatmap-scroll-wrap::after{content:"";position:absolute;top:0;bottom:14px;width:40px;pointer-events:none;opacity:0;transition:opacity .15s;z-index:2}
