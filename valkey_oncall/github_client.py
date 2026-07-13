@@ -73,6 +73,7 @@ class GitHubActionsClient:
         branch: Optional[str] = None,
         created_after: Optional[str] = None,
         created_before: Optional[str] = None,
+        event: Optional[str] = None,
         page: int = 1,
         per_page: int = 100,
     ) -> List[Dict]:
@@ -90,6 +91,9 @@ class GitHubActionsClient:
             }
             if branch is not None:
                 params["branch"] = branch
+            if event is not None:
+                # Filter by trigger event, e.g. "push" for post-merge CI runs.
+                params["event"] = event
             if created_after or created_before:
                 # GitHub uses the `created` query param with range syntax
                 parts: List[str] = []

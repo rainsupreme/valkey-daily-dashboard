@@ -21,6 +21,7 @@ from valkey_oncall.scorecard import (
     compute_scorecards,
 )
 from valkey_oncall.stats import regression_rate_lower_bound
+from valkey_oncall.windowing import run_key, select_runs
 
 _ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 logger = logging.getLogger(__name__)
@@ -86,33 +87,29 @@ def generate_report_data(
     workflow: str = "daily.yml",
     repo: str = "valkey-io/valkey",
     client=None,
+    per_run: bool = False,
+    max_runs: int = 50,
 ) -> Dict:
     """Build the data structure for the failure trend report.
 
     If *client* (a ``GitHubActionsClient``) is provided, the report will
     include the list of commits between consecutive runs.
+
+    With ``per_run=True`` (CI mode), every completed run is its own column and
+    the window is the last ``max_runs`` runs. Otherwise (Daily mode) runs are
+    deduplicated to one per calendar day over the last ``days`` days.
     """
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
-        "%Y-%m-%dT00:00:00Z"
-    )
-
-    all_runs = cache.query_runs(
-        repo=repo, workflow=workflow, branch=branch, since=since
-    )
-    # Keep only completed scheduled runs (one per day, skip duplicates)
-    seen_dates: set[str] = set()
-    runs: List[Dict] = []
-    for r in all_runs:
-        if r["status"] in ("in_progress", "queued", "skipped", "action_required"):
-            continue
-        date_key = r["run_date"][:10]
-        if date_key in seen_dates:
-            continue
-        seen_dates.add(date_key)
-        runs.append(r)
-
-    # Oldest first for the timeline
-    runs.sort(key=lambda r: r["run_date"])
+    if per_run:
+        all_runs = cache.query_runs(repo=repo, workflow=workflow, branch=branch)
+        runs = select_runs(all_runs, per_run=True)[-max_runs:]
+    else:
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
+            "%Y-%m-%dT00:00:00Z"
+        )
+        all_runs = cache.query_runs(
+            repo=repo, workflow=workflow, branch=branch, since=since
+        )
+        runs = select_runs(all_runs, per_run=False)
 
     # For each run, gather jobs and failures
     run_details: List[Dict] = []
@@ -121,13 +118,14 @@ def generate_report_data(
 
     for run in runs:
         rid = run["run_id"]
-        date_key = run["run_date"][:10]
+        date_key = run_key(run, per_run)
         all_jobs = cache.query_jobs(rid)
         failed_jobs = cache.query_jobs(rid, failed_only=True)
 
         run_info = {
             "run_id": rid,
             "date": date_key,
+            "day": run["run_date"][:10],
             "status": run["status"],
             "commit_sha": run.get("commit_sha", ""),
             "total_jobs": len(all_jobs),
@@ -179,6 +177,26 @@ def generate_report_data(
     sorted_tests = sorted(test_totals.keys(), key=lambda n: -test_totals[n])
 
     dates = [r["date"] for r in run_details]
+
+    # Per-column descriptors so the renderer can label headers generically:
+    # per-day mode -> M/D label; per-run mode -> short commit SHA.
+    columns: List[Dict] = []
+    for r in run_details:
+        key = r["date"]
+        day = r.get("day", key[:10])
+        if per_run:
+            sha = r.get("commit_sha", "") or ""
+            columns.append(
+                {
+                    "key": key,
+                    "label": sha[:7] if sha else day,
+                    "title": f"{day} · {sha[:10]}" if sha else day,
+                }
+            )
+        else:
+            columns.append(
+                {"key": key, "label": f"{int(key[5:7])}/{int(key[8:10])}", "title": key}
+            )
 
     # Record each run's previous SHA so the report can render a GitHub compare
     # link (needs no API/token) even when commit lists aren't fetched.
@@ -247,6 +265,8 @@ def generate_report_data(
 
     return {
         "dates": dates,
+        "columns": columns,
+        "per_run": per_run,
         "runs": run_details,
         "tests": {
             name: {
@@ -274,13 +294,26 @@ def generate_report_data(
         # Full 90-day flakiness roster (the "board of shame"), independent of
         # the recent-window heatmap above. Ranked worst-first by compute_scorecards.
         "scorecard": compute_scorecards(
-            cache, days=90, branch=branch, workflow=workflow, repo=repo
+            cache,
+            days=90,
+            branch=branch,
+            workflow=workflow,
+            repo=repo,
+            per_run=per_run,
+            max_runs=max_runs,
         ),
         # Detected green->red regressions (blame). compute_blame is client-safe:
         # without commit-API access, blame_commits is empty but the transition
         # SHAs remain, which is all the compare-link view needs.
         "regressions": compute_blame(
-            cache, client, days=90, branch=branch, workflow=workflow, repo=repo
+            cache,
+            client,
+            days=90,
+            branch=branch,
+            workflow=workflow,
+            repo=repo,
+            per_run=per_run,
+            max_runs=max_runs,
         ),
     }
 
