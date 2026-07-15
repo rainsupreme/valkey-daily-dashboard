@@ -69,6 +69,16 @@ def synthetic_run_id(real_run_id: int, branch_index: int) -> int:
     return -(real_run_id * 100 + branch_index)
 
 
+def source_run_id(run_id: int) -> int:
+    """Real GitHub run id for any cached run id.
+
+    Inverse of :func:`synthetic_run_id` for weekly-split synthetic runs
+    (negative ids); real (positive) ids pass through unchanged. Used to
+    build job-log URLs, which need the real workflow run id.
+    """
+    return run_id if run_id >= 0 else (-run_id) // 100
+
+
 def build_synthetic_runs(run: Dict, by_branch: Dict[str, List[Dict]]) -> List[Dict]:
     """Build synthetic per-branch run dicts (cache schema) for one weekly run.
 

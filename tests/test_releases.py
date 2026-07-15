@@ -245,6 +245,158 @@ class TestSanitizeStripsFanoutPrefix:
         assert timeline["2026-07-12"] is not None
 
 
+class TestReleaseStrip:
+    """Compact release-health strip embedded on the main (daily/CI) page."""
+
+    def test_badges_link_and_label(self, temp_db_path: str) -> None:
+        from valkey_oncall.releases import render_release_strip
+
+        cache = _seed(temp_db_path)
+        rows = generate_releases_data(cache)["summary_rows"]
+        strip = render_release_strip(rows)
+        assert 'href="releases.html#branch-9.0"' in strip
+        assert 'href="releases.html#branch-8.0"' in strip
+        assert "🔴" in strip  # both seeded branches are crit
+        assert "1/2" in strip and "2/2" in strip
+        assert "Release branches (weekly):" in strip
+        assert "build broken" in strip  # tooltip on 9.0
+
+    def test_empty_rows_render_nothing(self) -> None:
+        from valkey_oncall.releases import render_release_strip
+
+        assert render_release_strip([]) == ""
+
+    def test_main_page_embeds_strip(self, temp_db_path: str) -> None:
+        from valkey_oncall.releases import render_release_strip
+        from valkey_oncall.report import generate_report_data, render_html
+
+        cache = _seed(temp_db_path)
+        rows = generate_releases_data(cache)["summary_rows"]
+        idx = render_html(
+            generate_report_data(cache, workflow=WEEKLY_SPLIT_WORKFLOW, branch="8.0"),
+            releases_strip=render_release_strip(rows),
+        )
+        assert idx.count('class="rel-strip"') == 1
+        assert 'href="releases.html#branch-9.0"' in idx
+
+    def test_main_page_without_strip_unchanged(self, temp_db_path: str) -> None:
+        """Default render (no strip arg) must not emit any strip markup."""
+        from valkey_oncall.report import generate_report_data, render_html
+
+        cache = _seed(temp_db_path)
+        idx = render_html(
+            generate_report_data(cache, workflow=WEEKLY_SPLIT_WORKFLOW, branch="8.0")
+        )
+        assert 'class="rel-strip"' not in idx
+
+
+class TestFailureDeepLinks:
+    """Heatmap fail cells and Run Details job names link to GitHub job logs."""
+
+    def test_source_run_id_roundtrip(self) -> None:
+        from valkey_oncall.weekly import source_run_id, synthetic_run_id
+
+        assert source_run_id(synthetic_run_id(29183329995, 3)) == 29183329995
+        assert source_run_id(12345) == 12345  # real ids pass through
+
+    def test_weekly_split_cells_link_to_real_run(self, temp_db_path: str) -> None:
+        from valkey_oncall.report import _render_heatmap_table, generate_report_data
+
+        cache = _seed(temp_db_path)  # synthetic ids -> real runs 1,2
+        data = generate_report_data(cache, workflow=WEEKLY_SPLIT_WORKFLOW, branch="8.0")
+        table = _render_heatmap_table(data)
+        # job 5 fails in synthetic run -200 -> real run id 2
+        assert (
+            'href="https://github.com/valkey-io/valkey/actions/runs/2/job/5"' in table
+        )
+        assert 'target="_blank" rel="noopener noreferrer"' in table
+
+    def test_daily_run_details_job_links(self, temp_db_path: str) -> None:
+        from valkey_oncall.report import generate_report_data, render_html
+
+        cache = _seed(temp_db_path)
+        data = generate_report_data(cache, workflow=WEEKLY_SPLIT_WORKFLOW, branch="8.0")
+        run = [r for r in data["runs"] if r["failed_jobs"]][0]
+        assert run["failed_job_urls"], "run_info should carry job urls"
+        page = render_html(data)
+        assert (
+            'class="job-link" href="https://github.com/valkey-io/valkey/actions/runs/'
+            in page
+        )
+
+    def test_timeline_entries_carry_job_urls(self, temp_db_path: str) -> None:
+        from valkey_oncall.report import generate_report_data
+
+        cache = _seed(temp_db_path)
+        data = generate_report_data(cache, workflow=WEEKLY_SPLIT_WORKFLOW, branch="9.0")
+        for info in data["tests"].values():
+            for entry in info["timeline"].values():
+                if entry is not None:
+                    assert entry["job_urls"], entry
+
+
+class TestReleasesTabs:
+    """Tab bar + Regressions/Scorecard panels on the releases page."""
+
+    def test_four_panels_heatmap_active(self, temp_db_path: str) -> None:
+        import re
+
+        from valkey_oncall.releases import render_releases_html
+
+        cache = _seed(temp_db_path)
+        h = render_releases_html(generate_releases_data(cache))
+        assert h.count('class="tab-panel') == 4
+        assert re.search(r'<div class="tab-panel active" id="tab-heatmap"', h)
+        for t in ("heatmap", "regressions", "rundetails", "scorecard"):
+            assert f'id="tab-{t}"' in h
+        # Summary strip stays above the tab bar
+        assert h.index('class="rel-summary"') < h.index('class="tabs"')
+
+    def test_per_branch_regression_and_scorecard_sections(
+        self, temp_db_path: str
+    ) -> None:
+        from valkey_oncall.releases import render_releases_html
+
+        cache = _seed(temp_db_path)
+        h = render_releases_html(generate_releases_data(cache))
+        reg = h.split('id="tab-regressions"')[1].split('id="tab-rundetails"')[0]
+        sc = h.split('id="tab-scorecard"')[1]
+        # One wf-title per branch in each panel (9.0 + 8.0 seeded)
+        assert reg.count('class="wf-title"') == 2
+        assert sc.count('class="wf-title"') == 2
+        # Scorecards populated for branches with failures
+        assert sc.count("scorecard-table") >= 1
+
+
+class TestRunDetailsTab:
+    """Per-branch weekly run tables with linked failing jobs."""
+
+    def test_tables_weeks_and_links(self, temp_db_path: str) -> None:
+        import re
+
+        from valkey_oncall.releases import render_releases_html
+
+        cache = _seed(temp_db_path)
+        h = render_releases_html(generate_releases_data(cache))
+        panel = h.split('id="tab-rundetails"')[1].split('id="tab-scorecard"')[0]
+
+        # One table per branch, stub gone
+        assert panel.count('class="wf-title"') == 2
+        assert panel.count("scorecard-table") == 2
+        assert "Run details are being added" not in h
+
+        # Week rows newest-first, linked to the REAL run page
+        days = re.findall(r'noreferrer">(\d{4}-\d{2}-\d{2}) ↗', panel)
+        assert days[:2] == ["2026-07-12", "2026-07-05"]  # per branch
+        # synthetic -200 -> real run 2; -101/-201 (9.0) -> 1 and 2
+        assert 'href="https://github.com/valkey-io/valkey/actions/runs/2"' in panel
+
+        # Failing jobs link to job logs; passing week shows PASS badge
+        assert re.search(r'actions/runs/\d+/job/\d+"', panel)
+        assert '<span class="badge pass">PASS</span>' in panel
+        assert "FAIL (2/2)" in panel  # 9.0 weeks
+
+
 class TestRenderReleasesHtml:
     def test_layout_badges_and_defaults(self, temp_db_path: str) -> None:
         import re

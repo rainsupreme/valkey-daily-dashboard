@@ -21,6 +21,7 @@ from valkey_oncall.scorecard import (
     compute_scorecards,
 )
 from valkey_oncall.stats import regression_rate_lower_bound
+from valkey_oncall.weekly import source_run_id
 from valkey_oncall.windowing import run_key, select_runs
 
 _ASSETS_DIR = Path(__file__).resolve().parent / "assets"
@@ -80,6 +81,27 @@ def _asset(name: str) -> str:
     return (_ASSETS_DIR / name).read_text(encoding="utf-8")
 
 
+# Shared table heads for scorecard / regression tables (also used by the
+# releases page renderer).
+SC_HEAD = (
+    "<thead><tr><th>#</th><th>Test</th><th>Class</th><th>Trend</th>"
+    '<th>Category</th><th>Rate</th><th title="runs failed / total runs">Runs</th>'
+    "<th>Recent activity</th></tr></thead>"
+)
+REG_HEAD = (
+    "<thead><tr><th>Test</th><th>First failed</th><th>Last passed</th>"
+    "<th>Suspect range</th><th>Baseline</th><th>Surprise</th>"
+    "<th>Onset</th><th>Post-onset</th></tr></thead>"
+)
+
+
+def job_log_url(repo: str, run_id: int, job_id: int) -> str:
+    """GitHub job-log page URL, valid for real and weekly-split run ids."""
+    return (
+        f"https://github.com/{repo}/actions/runs/{source_run_id(run_id)}/job/{job_id}"
+    )
+
+
 def generate_report_data(
     cache: Cache,
     days: int = 14,
@@ -131,6 +153,10 @@ def generate_report_data(
             "total_jobs": len(all_jobs),
             "failed_jobs": len(failed_jobs),
             "failed_job_names": sorted(j["name"] for j in failed_jobs),
+            "failed_job_urls": [
+                job_log_url(repo, rid, j["job_id"])
+                for j in sorted(failed_jobs, key=lambda j: j["name"])
+            ],
         }
 
         # Gather failures for this run
@@ -163,10 +189,15 @@ def generate_report_data(
                 set(inst["error_summary"][:120] for inst in instances)
             )
             job_names = sorted(set(inst["job_name"] for inst in instances))
+            job_urls = [
+                job_log_url(repo, rid, jid)
+                for jid in sorted(set(inst["job_id"] for inst in instances))
+            ]
             test_timeline[test_name][date_key] = {
                 "count": len(instances),
                 "errors": error_summaries,
                 "jobs": job_names,
+                "job_urls": job_urls,
             }
 
     # Sort tests by total failure count (most frequent first)
@@ -379,8 +410,17 @@ def _render_heatmap_table(data: Dict) -> str:
                 if len(entry["jobs"]) > 3:
                     jobs += f" +{len(entry['jobs']) - 3}"
                 errs = "; ".join(entry["errors"][:2])
-                tip = html.escape(f"{n}x\nJobs: {jobs}\nError: {errs}")
-                cells += f'<td class="cell fail" title="{tip}">{n}</td>'
+                urls = entry.get("job_urls") or []
+                extra = " · click for job log" if urls else ""
+                tip = html.escape(f"{n}x\nJobs: {jobs}\nError: {errs}{extra}")
+                if urls:
+                    cells += (
+                        f'<td class="cell fail" title="{tip}">'
+                        f'<a href="{urls[0]}" target="_blank" '
+                        f'rel="noopener noreferrer">{n}</a></td>'
+                    )
+                else:
+                    cells += f'<td class="cell fail" title="{tip}">{n}</td>'
         warn_lb = reg_warnings.get(test_name)
         warn_marker = ""
         if warn_lb is not None:
@@ -431,11 +471,15 @@ def _render_heatmap_table(data: Dict) -> str:
 </table></div>{wrap_close}"""
 
 
-def render_html(data: Dict, ci_data: Dict | None = None) -> str:
+def render_html(
+    data: Dict, ci_data: Dict | None = None, releases_strip: str = ""
+) -> str:
     """Render the report data as a self-contained HTML file.
 
     *data* is the Daily (nightly, per-day) report. When *ci_data* (the CI,
     per-run report) is provided, each tab stacks the CI view on top of Daily.
+    *releases_strip* is pre-rendered release-health badge HTML (from
+    releases.render_release_strip); empty when there is no weekly data.
     """
     summary = data["summary"]
     runs = data["runs"]
@@ -464,11 +508,18 @@ def render_html(data: Dict, ci_data: Dict | None = None) -> str:
         else:
             status_badge = f'<span class="badge fail">FAIL ({run["failed_jobs"]}/{run["total_jobs"]})</span>'
         jobs_list = run["failed_job_names"][:5]
+        jobs_urls = run.get("failed_job_urls", [])[:5]
         jobs_extra = len(run["failed_job_names"]) - 5
         if jobs_list:
             jobs_html = '<div class="job-list">'
-            for jn in jobs_list:
-                jobs_html += f'<div class="job-entry">{html.escape(jn)}</div>'
+            for k, jn in enumerate(jobs_list):
+                label = html.escape(jn)
+                if k < len(jobs_urls):
+                    label = (
+                        f'<a class="job-link" href="{jobs_urls[k]}" target="_blank" '
+                        f'rel="noopener noreferrer">{label} ↗</a>'
+                    )
+                jobs_html += f'<div class="job-entry">{label}</div>'
             if jobs_extra > 0:
                 jobs_html += f'<div class="job-entry" style="color:#8b949e">+{jobs_extra} more</div>'
             jobs_html += "</div>"
@@ -534,16 +585,6 @@ def render_html(data: Dict, ci_data: Dict | None = None) -> str:
     fixed_regressions = _render_fixed_regressions(fixed, repo)
 
     # --- CI (per-run) blocks stacked ABOVE the Daily views ---
-    _SC_HEAD = (
-        "<thead><tr><th>#</th><th>Test</th><th>Class</th><th>Trend</th>"
-        '<th>Category</th><th>Rate</th><th title="runs failed / total runs">Runs</th>'
-        "<th>Recent activity</th></tr></thead>"
-    )
-    _REG_HEAD = (
-        "<thead><tr><th>Test</th><th>First failed</th><th>Last passed</th>"
-        "<th>Suspect range</th><th>Baseline</th><th>Surprise</th>"
-        "<th>Onset</th><th>Post-onset</th></tr></thead>"
-    )
     ci_scorecard = ""
     ci_regressions = ""
     if ci_data:
@@ -552,7 +593,7 @@ def render_html(data: Dict, ci_data: Dict | None = None) -> str:
         ci_scorecard = (
             '<h3 class="wf-title">CI · per-commit flakiness</h3>'
             '<table class="scorecard-table">'
-            f"{_SC_HEAD}<tbody>{_render_scorecard_rows(ci_active)}</tbody></table>"
+            f"{SC_HEAD}<tbody>{_render_scorecard_rows(ci_active)}</tbody></table>"
             '<h3 class="wf-title">Daily · nightly full suite</h3>'
         )
         ci_regs = ci_data.get("regressions", [])
@@ -561,7 +602,7 @@ def render_html(data: Dict, ci_data: Dict | None = None) -> str:
         ci_regressions = (
             '<h3 class="wf-title">CI · per-commit regressions</h3>'
             '<table class="scorecard-table">'
-            f"{_REG_HEAD}<tbody>{_render_regression_rows(ci_ongoing, repo)}</tbody>"
+            f"{REG_HEAD}<tbody>{_render_regression_rows(ci_ongoing, repo)}</tbody>"
             "</table>"
             f"{_render_fixed_regressions(ci_fixed, repo)}"
             '<h3 class="wf-title">Daily · nightly full suite</h3>'
@@ -579,6 +620,7 @@ def render_html(data: Dict, ci_data: Dict | None = None) -> str:
         unique_tests=summary["unique_tests_failed"],
         generated=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         heatmap_body=heatmap_body,
+        releases_strip=releases_strip,
         ci_scorecard=ci_scorecard,
         ci_regressions=ci_regressions,
         run_detail_rows=run_detail_rows,
@@ -1070,6 +1112,7 @@ ${styles}
 <h1>Valkey CI Failure Report</h1>
 <p class="meta">${workflow} · ${branch} · ${repo} · last ${days} days · generated ${generated} · <a href="releases.html" class="rel-branch-link" title="weekly full-suite health per supported release branch (7.2, 8.0, ...)">Release branch health →</a></p>
 <p class="hint">Valkey CI failure trends for the <b>${branch}</b> branch — nightly Daily suite and per-commit CI. Tracks which tests fail, how often, and whether they are getting better or worse.</p>
+${releases_strip}
 
 <div class="stats">
   <div class="stat"><div class="stat-val">${total_runs}</div><div class="stat-label">runs</div></div>
