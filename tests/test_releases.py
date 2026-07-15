@@ -183,3 +183,51 @@ class TestGenerateReleasesData:
         assert data["branches"] == []
         assert data["summary_rows"] == []
         assert data["summary"]["latest_week"] is None
+
+
+class TestRenderReleasesHtml:
+    def test_layout_badges_and_defaults(self, temp_db_path: str) -> None:
+        import re
+
+        from valkey_oncall.releases import render_releases_html
+
+        cache = _seed(temp_db_path)
+        html_out = render_releases_html(generate_releases_data(cache))
+
+        # Balanced structural tags
+        for tag in ("table", "details", "thead", "tbody", "tr"):
+            opens = len(re.findall(f"<{tag}[ >]", html_out))
+            closes = len(re.findall(f"</{tag}>", html_out))
+            assert opens == closes, f"unbalanced <{tag}>"
+
+        # Summary rows newest-first, sections match
+        assert re.findall(r'#branch-([\d.]+)"', html_out)[:2] == ["9.0", "8.0"]
+
+        # 9.0 is build-broken (badge, section open); 8.0 crit but attributed
+        # (unhealthy badge, section open)
+        opens = dict(
+            re.findall(
+                r'<details id="branch-([\d.]+)" class="rel-branch"( open)?>',
+                html_out,
+            )
+        )
+        assert opens == {"9.0": " open", "8.0": " open"}
+        assert html_out.count("🔴 build broken") == 2  # 9.0 summary + section
+        assert html_out.count("🔴 unhealthy") == 2  # 8.0 summary + section
+
+        # Sparkline, unattributed marker, shared methodology note, heatmaps
+        assert '<svg class="spark"' in html_out
+        assert "unattributed" in html_out
+        assert "structurally broken" in html_out
+        assert html_out.count('class="heatmap-scroll"') == 2
+        # Per-day weekly tables never use the CI horizontal-scroll mode
+        assert 'class="heatmap-scroll scroll-right"' not in html_out
+        # Cross-link to the main dashboard
+        assert 'href="index.html"' in html_out
+
+    def test_empty_dataset_renders(self, temp_db_path: str) -> None:
+        from valkey_oncall.releases import render_releases_html
+
+        html_out = render_releases_html(generate_releases_data(Cache(temp_db_path)))
+        assert "Valkey Release Branch Health" in html_out
+        assert "no data yet" in html_out

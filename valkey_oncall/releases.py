@@ -14,10 +14,18 @@ dates remain.
 
 from __future__ import annotations
 
+import html
+from datetime import datetime, timezone
+from string import Template
 from typing import Dict, List
 
 from valkey_oncall.cache import Cache
-from valkey_oncall.report import generate_report_data
+from valkey_oncall.report import (
+    _asset,
+    _render_heatmap_table,
+    _sparkline,
+    generate_report_data,
+)
 from valkey_oncall.weekly import WEEKLY_SPLIT_WORKFLOW
 
 #: A branch whose latest week has >= this share of jobs failing is "crit".
@@ -127,3 +135,127 @@ def generate_releases_data(
             ),
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# HTML rendering
+# ---------------------------------------------------------------------------
+
+_TIER_BADGE = {
+    "ok": ('<span class="rel-badge rel-ok">🟢 healthy</span>', 0),
+    "warn": ('<span class="rel-badge rel-warn">🟡 failures</span>', 1),
+    "crit": ('<span class="rel-badge rel-crit">🔴 unhealthy</span>', 2),
+}
+
+
+def _badge(row: Dict) -> str:
+    if row.get("build_broken"):
+        return '<span class="rel-badge rel-crit">🔴 build broken</span>'
+    return _TIER_BADGE.get(row["tier"], _TIER_BADGE["warn"])[0]
+
+
+def _summary_table(rows: List[Dict]) -> str:
+    body = ""
+    for row in rows:
+        b = html.escape(row["branch"])
+        trend_series = [t["failed_jobs"] for t in row["trend"]]
+        tests_cell = str(row["failing_tests"])
+        if row["unattributed_jobs"]:
+            tests_cell += (
+                f' <span class="rel-unattr" title="jobs that failed before any '
+                f'test ran (build / setup / timeout)">+{row["unattributed_jobs"]} '
+                f"unattributed</span>"
+            )
+        body += f"""<tr>
+          <td><a href="#branch-{b}" class="rel-branch-link">{b}</a></td>
+          <td>{_badge(row)}</td>
+          <td class="rel-jobs">{row["failed_jobs"]}/{row["total_jobs"]}</td>
+          <td>{tests_cell}</td>
+          <td class="rel-spark">{_sparkline(trend_series)}</td>
+          <td class="rel-week">{html.escape(row["latest_week"] or "—")}</td>
+        </tr>"""
+    return f"""<table class="rel-summary">
+      <thead><tr>
+        <th>Branch</th><th>Health</th>
+        <th title="failed / total jobs in the latest weekly run">Jobs failed</th>
+        <th title="distinct failing tests in the latest weekly run">Failing tests</th>
+        <th title="failed jobs per week, oldest to newest">Trend</th>
+        <th>Latest week</th>
+      </tr></thead>
+      <tbody>{body}</tbody>
+    </table>"""
+
+
+def _branch_sections(data: Dict) -> str:
+    sections = ""
+    for branch in data["branches"]:
+        b = html.escape(branch)
+        row = next(r for r in data["summary_rows"] if r["branch"] == branch)
+        open_attr = " open" if row["tier"] == "crit" else ""
+        n_weeks = len(data["per_branch"][branch].get("columns", []))
+        sections += f"""<details id="branch-{b}" class="rel-branch"{open_attr}>
+          <summary><span class="rel-branch-title">{b}</span> {_badge(row)}
+            <span class="rel-summary-inline">{row["failed_jobs"]}/{row["total_jobs"]} jobs failed
+            · latest week {html.escape(row["latest_week"] or "—")}</span></summary>
+          <h3 class="wf-title">Weekly full suite · last {n_weeks} weeks (columns are Sundays)</h3>
+          {_render_heatmap_table(data["per_branch"][branch])}
+        </details>"""
+    return sections
+
+
+def render_releases_html(data: Dict) -> str:
+    """Render the releases page: summary strip + per-branch sections."""
+    return Template(_RELEASES_TEMPLATE).substitute(
+        styles=_asset("report.css"),
+        script=_asset("report.js"),
+        repo=html.escape(data["summary"]["repo"]),
+        branch_count=data["summary"]["branch_count"],
+        latest_week=html.escape(data["summary"]["latest_week"] or "no data yet"),
+        generated=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        summary_table=_summary_table(data["summary_rows"]),
+        branch_sections=_branch_sections(data),
+    )
+
+
+_RELEASES_TEMPLATE = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Valkey Release Branch Health</title>
+<style>
+${styles}
+/* Releases page additions */
+.rel-summary{border-collapse:collapse;margin:14px 0;width:100%;max-width:760px}
+.rel-summary th,.rel-summary td{padding:6px 12px;text-align:left;border-bottom:1px solid #21262d;font-size:0.9rem}
+.rel-summary th{color:#8b949e;font-weight:600;font-size:0.8rem}
+.rel-jobs{font-family:monospace}
+.rel-spark{min-width:100px}
+.rel-week{color:#8b949e}
+.rel-badge{font-size:0.8rem;white-space:nowrap}
+.rel-unattr{color:#8b949e;font-size:0.8rem}
+.rel-branch{margin:14px 0;border:1px solid #21262d;border-radius:6px;padding:4px 14px}
+.rel-branch>summary{cursor:pointer;padding:8px 0;font-size:0.95rem}
+.rel-branch-title{font-weight:700;font-size:1.05rem;margin-right:6px}
+.rel-summary-inline{color:#8b949e;font-size:0.85rem;margin-left:8px}
+.rel-branch-link{color:#58a6ff;text-decoration:none}
+.rel-branch-link:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+<h1>Valkey Release Branch Health</h1>
+<p class="meta">weekly full suite per release branch · ${repo} · ${branch_count} branches · latest week ${latest_week} · generated ${generated}</p>
+<p class="hint">Every Sunday the <b>Weekly</b> workflow runs the full Daily test matrix against each supported release branch. This page tracks per-branch health — the summary below answers "which shipped versions are unhealthy?", the sections underneath show which tests fail per week. Unlike <a href="index.html">the unstable dashboard</a>, the goal here is <b>visibility</b>, not deflaking.</p>
+
+${summary_table}
+
+<p class="hint">A red <b>Run status</b> with no test rows below it — or a high "unattributed" count — means jobs died on build / sanitizer / setup / timeout before any test ran: the branch is structurally broken, not flaky. 🔴 sections start expanded; healthier branches are collapsed.</p>
+
+${branch_sections}
+
+<script>
+${script}
+</script>
+</body>
+</html>
+"""
