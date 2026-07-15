@@ -185,6 +185,66 @@ class TestGenerateReleasesData:
         assert data["summary"]["latest_week"] is None
 
 
+class TestSanitizeStripsFanoutPrefix:
+    """Historical rows parsed before splitting carry the fan-out job prefix;
+    display-time sanitize must strip it so they aggregate with fresh rows."""
+
+    def test_prefixed_and_stripped_rows_aggregate(self, temp_db_path: str) -> None:
+        from valkey_oncall.log_parser import sanitize_cached_failure
+
+        prefixed = (
+            "run-daily-for-release-branches (8.1) / "
+            "test-ubuntu-32bit: unattributed failure"
+        )
+        stripped = "test-ubuntu-32bit: unattributed failure"
+        assert sanitize_cached_failure(prefixed) == sanitize_cached_failure(stripped)
+
+        # Non-prefixed names pass through untouched
+        name = "Test replica sync in tests/integration/replication"
+        assert sanitize_cached_failure(name) == name
+
+    def test_end_to_end_single_heatmap_row(self, temp_db_path: str) -> None:
+        """One branch, two weeks: week 1's failure stored with the historical
+        prefixed name (as the generic sync wrote it), week 2's with the
+        stripped name. The report must show ONE test row spanning both."""
+        cache = Cache(temp_db_path)
+        cache.store_runs(
+            [
+                _srun(-300, "8.1", "2026-07-05", "failure"),
+                _srun(-301, "8.1", "2026-07-12", "failure"),
+            ]
+        )
+        cache.store_jobs(-300, _jobs([(31, "test-x", "failure")]))
+        cache.store_jobs(-301, _jobs([(32, "test-x", "failure")]))
+        cache.store_failures(
+            31,
+            [
+                {
+                    "test_name": "run-daily-for-release-branches (8.1) / "
+                    "test-x: unattributed failure",
+                    "error_summary": "exit 1",
+                    "log_lines": "",
+                }
+            ],
+        )
+        cache.store_failures(
+            32,
+            [
+                {
+                    "test_name": "test-x: unattributed failure",
+                    "error_summary": "exit 1",
+                    "log_lines": "",
+                }
+            ],
+        )
+        data = generate_releases_data(cache)
+        tests = data["per_branch"]["8.1"]["tests"]
+        assert list(tests) == ["test-x: unattributed failure"]
+        timeline = tests["test-x: unattributed failure"]["timeline"]
+        assert timeline["2026-07-05"] is not None
+        assert timeline["2026-07-12"] is not None
+
+
 class TestRenderReleasesHtml:
     def test_layout_badges_and_defaults(self, temp_db_path: str) -> None:
         import re
