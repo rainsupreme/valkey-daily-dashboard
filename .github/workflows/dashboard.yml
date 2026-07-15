@@ -49,7 +49,12 @@ jobs:
             --since "$(date -u -d '60 days ago' +%Y-%m-%dT00:00:00Z)"
           # Ingest weekly release-branch runs (budgeted + resumable: the
           # backfill spreads across daily runs; steady state is a few calls).
-          valkey-oncall -v sync-releases --budget 300
+          # Budget 2500 ≈ the full remaining historical backlog in one run
+          # (~110 calls per weekly run; expired-log discovery costs the same).
+          # Steady state after backfill is ~110 calls/week, so the high
+          # budget has no ongoing cost and stays well inside the 5000/hr
+          # authenticated rate limit shared with the daily/CI syncs.
+          valkey-oncall -v sync-releases --budget 2500
           valkey-oncall -v report --format html --with-ci -o _site/index.html
           valkey-oncall report-releases --format html -o _site/releases.html
           valkey-oncall -v report --format markdown -o _site/report.md --no-sync
