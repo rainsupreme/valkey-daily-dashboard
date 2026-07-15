@@ -34,12 +34,20 @@ class GitHubActionsClient:
 
     def __init__(self, token: Optional[str] = None, repo: str = DEFAULT_REPO) -> None:
         self.repo = repo
+        #: Number of HTTP requests made by this client instance. Used by
+        #: budgeted sync passes to bound API usage per invocation.
+        self.requests_made = 0
         headers: Dict[str, str] = {"Accept": "application/vnd.github+json"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
         self._client = httpx.Client(
             base_url=BASE_URL, headers=headers, follow_redirects=True, timeout=120.0
         )
+
+    def _get(self, url: str, **kwargs) -> httpx.Response:
+        """Issue a GET, counting the request for budget accounting."""
+        self.requests_made += 1
+        return self._client.get(url, **kwargs)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -103,7 +111,7 @@ class GitHubActionsClient:
                     parts.append(f"<={created_before}")
                 params["created"] = "..".join(parts) if len(parts) == 2 else parts[0]
 
-            resp = self._client.get(
+            resp = self._get(
                 f"/repos/{self.repo}/actions/workflows/{workflow_file}/runs",
                 params=params,
             )
@@ -128,7 +136,7 @@ class GitHubActionsClient:
         per_page = 100
 
         while True:
-            resp = self._client.get(
+            resp = self._get(
                 f"/repos/{self.repo}/actions/runs/{run_id}/jobs",
                 params={"page": current_page, "per_page": per_page},
             )
@@ -147,7 +155,7 @@ class GitHubActionsClient:
 
     def get_job_log(self, job_id: int) -> str:
         """Fetch the raw log text for a given job ID."""
-        resp = self._client.get(f"/repos/{self.repo}/actions/jobs/{job_id}/logs")
+        resp = self._get(f"/repos/{self.repo}/actions/jobs/{job_id}/logs")
         self._raise_for_status(resp)
         return resp.text
 
@@ -157,7 +165,7 @@ class GitHubActionsClient:
         Uses ``GET /repos/{owner}/{repo}/compare/{base}...{head}``.
         Returns a list of compact commit dicts (sha, message, author, date).
         """
-        resp = self._client.get(
+        resp = self._get(
             f"/repos/{self.repo}/compare/{base}...{head}",
             params={"per_page": 100},
         )
@@ -177,7 +185,7 @@ class GitHubActionsClient:
 
     def get_commit(self, sha: str) -> Dict:
         """Fetch a single commit and return a compact dict."""
-        resp = self._client.get(f"/repos/{self.repo}/commits/{sha}")
+        resp = self._get(f"/repos/{self.repo}/commits/{sha}")
         self._raise_for_status(resp)
         data = resp.json()
         commit = data.get("commit", {})

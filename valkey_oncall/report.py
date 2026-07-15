@@ -1068,7 +1068,7 @@ ${styles}
 </head>
 <body>
 <h1>Valkey CI Failure Report</h1>
-<p class="meta">${workflow} · ${branch} · ${repo} · last ${days} days · generated ${generated}</p>
+<p class="meta">${workflow} · ${branch} · ${repo} · last ${days} days · generated ${generated} · <a href="releases.html" class="rel-branch-link" title="weekly full-suite health per supported release branch (7.2, 8.0, ...)">Release branch health →</a></p>
 <p class="hint">Valkey CI failure trends for the <b>${branch}</b> branch — nightly Daily suite and per-commit CI. Tracks which tests fail, how often, and whether they are getting better or worse.</p>
 
 <div class="stats">

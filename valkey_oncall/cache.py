@@ -50,6 +50,15 @@ CREATE TABLE IF NOT EXISTS parse_status (
     parsed_at TEXT    NOT NULL
 );
 
+-- Per-run ingest progress for weekly release-branch splitting.
+-- status: 'split' = jobs fetched + synthetic per-branch runs stored;
+--         'done'  = all failed-job logs fetched/parsed (or confirmed expired).
+CREATE TABLE IF NOT EXISTS weekly_ingest (
+    run_id      INTEGER PRIMARY KEY,
+    status      TEXT    NOT NULL,
+    ingested_at TEXT    NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_runs_workflow ON workflow_runs(workflow_file);
 CREATE INDEX IF NOT EXISTS idx_runs_date ON workflow_runs(run_date);
 CREATE INDEX IF NOT EXISTS idx_runs_status ON workflow_runs(status);
@@ -324,6 +333,35 @@ class Cache:
         self._conn.execute(
             "INSERT OR REPLACE INTO parse_status (job_id, status, parsed_at) VALUES (?, 'unparseable', ?)",
             (job_id, _now_iso()),
+        )
+        self._conn.commit()
+
+    def mark_log_expired(self, job_id: int) -> None:
+        """Record that a job's log is gone from GitHub (~90-day retention).
+
+        Stored in parse_status so the job is never re-fetched; distinct
+        from 'unparseable' (log present but no test names recognised).
+        """
+        self._conn.execute(
+            "INSERT OR REPLACE INTO parse_status (job_id, status, parsed_at) VALUES (?, 'log_expired', ?)",
+            (job_id, _now_iso()),
+        )
+        self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # Weekly release-branch ingest markers
+    # ------------------------------------------------------------------
+
+    def get_weekly_ingest_status(self, run_id: int) -> Optional[str]:
+        row = self._conn.execute(
+            "SELECT status FROM weekly_ingest WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        return row["status"] if row else None
+
+    def set_weekly_ingest_status(self, run_id: int, status: str) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO weekly_ingest (run_id, status, ingested_at) VALUES (?, ?, ?)",
+            (run_id, status, _now_iso()),
         )
         self._conn.commit()
 

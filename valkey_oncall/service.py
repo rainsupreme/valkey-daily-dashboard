@@ -14,6 +14,11 @@ from valkey_oncall.github_client import (
     RateLimitError,
 )
 from valkey_oncall.log_parser import parse_job_log
+from valkey_oncall.weekly import (
+    WEEKLY_SPLIT_WORKFLOW,
+    build_synthetic_runs,
+    split_jobs_by_branch,
+)
 
 # Type alias for the optional progress callback
 ProgressCallback = Optional[Callable[[str], None]]
@@ -402,5 +407,174 @@ class OnCallService:
         _log(
             f"Sync complete: {summary['new_runs_fetched']} runs, "
             f"{summary['new_failures_parsed']} failures parsed"
+        )
+        return summary
+
+    # ------------------------------------------------------------------
+    # Weekly release-branch ingest (budgeted, resumable)
+    # ------------------------------------------------------------------
+
+    def sync_weekly_branches(
+        self,
+        budget: int = 300,
+        progress: ProgressCallback = None,
+    ) -> Dict:
+        """Ingest weekly release-branch runs as per-branch synthetic series.
+
+        Each ``weekly.yml`` run fans out ``daily.yml`` per release branch,
+        with all jobs in one run distinguished by a job-name prefix. This
+        pass splits every weekly run into synthetic per-branch runs
+        (``workflow_file='weekly-split'``, ``branch='X.Y'``) and fetches
+        failure logs where GitHub still retains them (~90 days).
+
+        Bounded by *budget* API calls per invocation; processing is
+        newest-first with per-run completion markers, so successive
+        invocations make monotonic progress through history and steady
+        state costs only the newest run. Cached data (from prior passes
+        or the generic sync) is reused at zero API cost.
+        """
+
+        def _log(msg: str) -> None:
+            if progress:
+                progress(msg)
+
+        start_requests = self._client.requests_made
+
+        def _budget_left() -> int:
+            return budget - (self._client.requests_made - start_requests)
+
+        summary: Dict = {
+            "runs_split": 0,
+            "runs_completed": 0,
+            "logs_fetched": 0,
+            "logs_expired": 0,
+            "failures_parsed": 0,
+            "budget_used": 0,
+            "budget_exhausted": False,
+            "errors": [],
+            "auth_failed": False,
+        }
+
+        # Refresh the weekly run list (scheduled runs only — PR-triggered
+        # runs of the workflow file carry no release-branch fan-out).
+        try:
+            self.fetch_runs("weekly", branch="unstable")
+        except Exception as exc:
+            summary["errors"].append(f"fetch_runs(weekly): {exc}")
+            if (
+                isinstance(exc, GitHubAPIError)
+                and not isinstance(exc, RateLimitError)
+                and exc.status_code in (401, 403)
+            ):
+                summary["auth_failed"] = True
+            summary["budget_used"] = self._client.requests_made - start_requests
+            return summary
+
+        weekly_runs = [
+            r
+            for r in self._cache.query_runs(
+                repo=self._client.repo, workflow="weekly.yml", branch="unstable"
+            )
+            if r["status"] in ("success", "failure")
+        ]  # newest-first (query_runs orders by run_date DESC)
+
+        for run in weekly_runs:
+            run_id = run["run_id"]
+            status = self._cache.get_weekly_ingest_status(run_id)
+            if status == "done":
+                continue
+            if _budget_left() <= 0:
+                summary["budget_exhausted"] = True
+                _log(f"Budget exhausted before run {run_id}; resuming next sync")
+                break
+
+            # ---- Tier 1: jobs + synthetic per-branch runs ----
+            if status is None:
+                _log(f"Splitting weekly run {run_id} ({run['run_date'][:10]})...")
+                try:
+                    jobs = self.fetch_jobs(run_id)
+                except Exception as exc:
+                    summary["errors"].append(f"fetch_jobs(run={run_id}): {exc}")
+                    continue
+                by_branch = split_jobs_by_branch(jobs)
+                if not by_branch:
+                    _log(f"  No release-branch jobs in run {run_id}; marking done")
+                    self._cache.set_weekly_ingest_status(run_id, "done")
+                    summary["runs_completed"] += 1
+                    continue
+                synthetic = build_synthetic_runs(run, by_branch)
+                self._cache.store_runs(synthetic)
+                # Re-point each branch's jobs at its synthetic run (job_id is
+                # the PK, so this re-homes rows; logs/failures key off job_id
+                # and are unaffected).
+                for srun in synthetic:
+                    branch = srun["branch"]
+                    self._cache.store_jobs(srun["run_id"], by_branch[branch])
+                self._cache.set_weekly_ingest_status(run_id, "split")
+                summary["runs_split"] += 1
+                status = "split"
+
+            # ---- Tier 2: failure logs (where retention allows) ----
+            failed_jobs: List[Dict] = []
+            for srun in self._cache.query_runs(
+                repo=self._client.repo, workflow=WEEKLY_SPLIT_WORKFLOW
+            ):
+                if abs(srun["run_id"]) // 100 == run_id:
+                    failed_jobs.extend(
+                        self._cache.query_jobs(srun["run_id"], failed_only=True)
+                    )
+
+            pending = [
+                j
+                for j in failed_jobs
+                if not self._cache.has_failures_for_job(j["job_id"])
+            ]
+            exhausted_mid_run = False
+            for job in pending:
+                job_id = job["job_id"]
+                if _budget_left() <= 0:
+                    summary["budget_exhausted"] = True
+                    exhausted_mid_run = True
+                    _log(f"Budget exhausted mid-run {run_id}; resuming next sync")
+                    break
+                try:
+                    if not self._cache.has_log(job_id):
+                        self.fetch_log(job_id)
+                        summary["logs_fetched"] += 1
+                    failures = self.parse_log(job_id)
+                    summary["failures_parsed"] += len(failures)
+                except RateLimitError as exc:
+                    summary["errors"].append(f"fetch_log(job={job_id}): {exc}")
+                    summary["budget_exhausted"] = True
+                    exhausted_mid_run = True
+                    break
+                except GitHubAPIError as exc:
+                    if exc.status_code in (404, 410):
+                        # Log fell out of GitHub's retention window; job
+                        # conclusions still feed the summary tier.
+                        self._cache.mark_log_expired(job_id)
+                        summary["logs_expired"] += 1
+                    else:
+                        summary["errors"].append(f"fetch_log(job={job_id}): {exc}")
+                        if exc.status_code in (401, 403):
+                            summary["auth_failed"] = True
+                            exhausted_mid_run = True
+                            break
+                except Exception as exc:
+                    summary["errors"].append(f"log(job={job_id}): {exc}")
+
+            if summary["auth_failed"]:
+                break
+            if not exhausted_mid_run:
+                self._cache.set_weekly_ingest_status(run_id, "done")
+                summary["runs_completed"] += 1
+
+        summary["budget_used"] = self._client.requests_made - start_requests
+        _log(
+            f"Weekly ingest: {summary['runs_split']} runs split, "
+            f"{summary['runs_completed']} completed, "
+            f"{summary['logs_fetched']} logs fetched, "
+            f"{summary['logs_expired']} expired, "
+            f"budget {summary['budget_used']}/{budget}"
         )
         return summary

@@ -47,13 +47,18 @@ jobs:
           # cache persists across runs so this stays incremental.
           valkey-oncall -v sync --workflow ci --branch unstable \
             --since "$(date -u -d '60 days ago' +%Y-%m-%dT00:00:00Z)"
+          # Ingest weekly release-branch runs (budgeted + resumable: the
+          # backfill spreads across daily runs; steady state is a few calls).
+          valkey-oncall -v sync-releases --budget 300
           valkey-oncall -v report --format html --with-ci -o _site/index.html
+          valkey-oncall report-releases --format html -o _site/releases.html
           valkey-oncall -v report --format markdown -o _site/report.md --no-sync
           valkey-oncall scorecard --no-sync -o _site/scorecards.json
           valkey-oncall blame --no-sync -o _site/blame.json
           # Export raw report data as JSON for machine consumption
           python3 -c "
           from valkey_oncall.cache import Cache; from valkey_oncall.report import generate_report_data, stale_reason
+          from valkey_oncall.releases import generate_releases_data
           import json, sys; from pathlib import Path
           cache = Cache(str(Path('~/.valkey-oncall/cache.db').expanduser()))
           data = generate_report_data(cache, days=14, branch='unstable', workflow='daily.yml')
@@ -65,6 +70,14 @@ jobs:
           ci_reason = stale_reason(ci['summary'].get('latest_run_date'))
           if ci_reason:
               print(f'WARNING: CI report stale — {ci_reason}', file=sys.stderr)
+          # Release-branch weekly export. Warn-only with a weekly-cadence
+          # threshold (Sunday run <= 9 days old); the backfill may still be
+          # in progress on early runs, so this must never gate the deploy.
+          rel = generate_releases_data(cache)
+          Path('_site/report-releases.json').write_text(json.dumps(rel, indent=2))
+          rel_reason = stale_reason(rel['summary'].get('latest_week'), max_age_days=9)
+          if rel_reason:
+              print(f'WARNING: releases report stale — {rel_reason}', file=sys.stderr)
           # Daily freshness is the hard gate: nightly cadence is regular, and a
           # dead/expired token trips this (the shared token also covers CI).
           reason = stale_reason(data['summary'].get('latest_run_date'))

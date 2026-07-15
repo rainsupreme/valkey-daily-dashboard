@@ -15,6 +15,8 @@ import re
 from dataclasses import dataclass
 from typing import List, Optional
 
+from valkey_oncall.weekly import parse_branch_job
+
 
 @dataclass
 class TestFailure:
@@ -156,6 +158,13 @@ def sanitize_cached_failure(test_name: str) -> Optional[str]:
     Returns the cleaned name, or None if the row should be dropped as noise.
     """
     cleaned = _scrub_volatile(test_name)
+    # Rows parsed before weekly release-branch splitting carry the fan-out
+    # job prefix (e.g. "run-daily-for-release-branches (8.1) / test-x:
+    # unattributed failure"); strip it so historical and freshly-parsed
+    # rows aggregate into the same heatmap row.
+    parsed = parse_branch_job(cleaned)
+    if parsed is not None:
+        cleaned = parsed[1]
     if not _is_valid_test_name(cleaned):
         return None
     return cleaned

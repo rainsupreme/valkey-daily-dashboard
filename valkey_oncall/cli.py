@@ -377,6 +377,90 @@ def sync(
 
 
 # ------------------------------------------------------------------
+# sync-releases
+# ------------------------------------------------------------------
+
+
+@cli.command("sync-releases")
+@click.option(
+    "--budget",
+    default=300,
+    show_default=True,
+    type=int,
+    help="Max GitHub API calls this invocation may spend; unfinished "
+    "backfill resumes on the next invocation.",
+)
+@click.pass_context
+def sync_releases(ctx: click.Context, budget: int) -> None:
+    """Ingest weekly release-branch runs as per-branch series (budgeted)."""
+    try:
+        _require_token()
+        cache = _make_cache(ctx.obj["db"])
+        client = _make_client(ctx.obj["repo"])
+        svc = OnCallService(client, cache)
+
+        progress = None
+        if ctx.obj.get("verbose"):
+
+            def progress(msg):
+                click.echo(msg, err=True)
+
+        summary = svc.sync_weekly_branches(budget=budget, progress=progress)
+        click.echo(json.dumps(summary, indent=2))
+        if summary.get("auth_failed"):
+            click.echo(
+                "Error: GitHub authentication failed during release sync.",
+                err=True,
+            )
+            sys.exit(1)
+    except GitHubAPIError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+
+# ------------------------------------------------------------------
+# report-releases
+# ------------------------------------------------------------------
+
+
+@cli.command("report-releases")
+@click.option(
+    "--format",
+    "fmt",
+    type=click.Choice(["html", "json"]),
+    default="html",
+    show_default=True,
+    help="Output format.",
+)
+@click.option(
+    "-o",
+    "--output",
+    default=None,
+    help="Write output to this file instead of stdout.",
+)
+@click.pass_context
+def report_releases(ctx: click.Context, fmt: str, output: Optional[str]) -> None:
+    """Render the release-branch health page from cached weekly-split data.
+
+    Reads only the cache — run ``sync-releases`` first to ingest data.
+    """
+    from valkey_oncall.releases import generate_releases_data, render_releases_html
+
+    cache = _make_cache(ctx.obj["db"])
+    data = generate_releases_data(cache, repo=ctx.obj["repo"])
+    if fmt == "html":
+        out = render_releases_html(data)
+    else:
+        out = json.dumps(data, indent=2)
+    if output:
+        with open(output, "w") as fh:
+            fh.write(out)
+        click.echo(f"Wrote {output}", err=True)
+    else:
+        click.echo(out)
+
+
+# ------------------------------------------------------------------
 # scorecard
 # ------------------------------------------------------------------
 
