@@ -249,8 +249,60 @@ def render_release_strip(summary_rows: List[Dict]) -> str:
 
 
 def _branch_run_details(data: Dict) -> str:
-    """Per-branch weekly run tables — populated in the Run Details stage."""
-    return '<p class="hint">Run details are being added — see the Heatmap tab for per-week status meanwhile.</p>'
+    """Per-branch weekly run tables: week, status, failing jobs (linked)."""
+    from valkey_oncall.weekly import source_run_id
+
+    repo = data["summary"]["repo"]
+    max_jobs = 8
+    sections = ""
+    for branch in data["branches"]:
+        d = data["per_branch"][branch]
+        rows = ""
+        for run in reversed(d.get("runs", [])):  # newest week first
+            real = source_run_id(run["run_id"])
+            week_link = (
+                f'<a class="job-link" '
+                f'href="https://github.com/{repo}/actions/runs/{real}" '
+                f'target="_blank" rel="noopener noreferrer">{run["day"]} ↗</a>'
+            )
+            if run["status"] == "success":
+                badge = '<span class="badge pass">PASS</span>'
+            else:
+                badge = (
+                    f'<span class="badge fail">FAIL '
+                    f"({run['failed_jobs']}/{run['total_jobs']})</span>"
+                )
+            names = run.get("failed_job_names", [])
+            urls = run.get("failed_job_urls", [])
+            jobs_html = "—"
+            if names:
+                jobs_html = '<div class="job-list">'
+                for k, jn in enumerate(names[:max_jobs]):
+                    label = html.escape(jn)
+                    if k < len(urls):
+                        label = (
+                            f'<a class="job-link" href="{urls[k]}" '
+                            f'target="_blank" rel="noopener noreferrer">{label} ↗</a>'
+                        )
+                    jobs_html += f'<div class="job-entry">{label}</div>'
+                if len(names) > max_jobs:
+                    jobs_html += (
+                        f'<div class="job-entry" style="color:#8b949e">'
+                        f"+{len(names) - max_jobs} more</div>"
+                    )
+                jobs_html += "</div>"
+            rows += f"<tr><td>{week_link}</td><td>{badge}</td><td>{jobs_html}</td></tr>"
+        sections += f'<h3 class="wf-title">{html.escape(branch)}</h3>'
+        if not rows:
+            sections += '<p class="hint">No weekly runs recorded yet.</p>'
+            continue
+        sections += (
+            '<table class="scorecard-table">'
+            "<thead><tr><th>Week</th><th>Status</th>"
+            "<th>Failed jobs (link to log)</th></tr></thead>"
+            f"<tbody>{rows}</tbody></table>"
+        )
+    return sections
 
 
 def _branch_regressions(data: Dict) -> str:

@@ -368,6 +368,35 @@ class TestReleasesTabs:
         assert sc.count("scorecard-table") >= 1
 
 
+class TestRunDetailsTab:
+    """Per-branch weekly run tables with linked failing jobs."""
+
+    def test_tables_weeks_and_links(self, temp_db_path: str) -> None:
+        import re
+
+        from valkey_oncall.releases import render_releases_html
+
+        cache = _seed(temp_db_path)
+        h = render_releases_html(generate_releases_data(cache))
+        panel = h.split('id="tab-rundetails"')[1].split('id="tab-scorecard"')[0]
+
+        # One table per branch, stub gone
+        assert panel.count('class="wf-title"') == 2
+        assert panel.count("scorecard-table") == 2
+        assert "Run details are being added" not in h
+
+        # Week rows newest-first, linked to the REAL run page
+        days = re.findall(r'noreferrer">(\d{4}-\d{2}-\d{2}) ↗', panel)
+        assert days[:2] == ["2026-07-12", "2026-07-05"]  # per branch
+        # synthetic -200 -> real run 2; -101/-201 (9.0) -> 1 and 2
+        assert 'href="https://github.com/valkey-io/valkey/actions/runs/2"' in panel
+
+        # Failing jobs link to job logs; passing week shows PASS badge
+        assert re.search(r'actions/runs/\d+/job/\d+"', panel)
+        assert '<span class="badge pass">PASS</span>' in panel
+        assert "FAIL (2/2)" in panel  # 9.0 weeks
+
+
 class TestRenderReleasesHtml:
     def test_layout_badges_and_defaults(self, temp_db_path: str) -> None:
         import re
