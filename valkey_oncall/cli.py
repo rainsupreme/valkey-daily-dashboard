@@ -377,6 +377,48 @@ def sync(
 
 
 # ------------------------------------------------------------------
+# sync-releases
+# ------------------------------------------------------------------
+
+
+@cli.command("sync-releases")
+@click.option(
+    "--budget",
+    default=300,
+    show_default=True,
+    type=int,
+    help="Max GitHub API calls this invocation may spend; unfinished "
+    "backfill resumes on the next invocation.",
+)
+@click.pass_context
+def sync_releases(ctx: click.Context, budget: int) -> None:
+    """Ingest weekly release-branch runs as per-branch series (budgeted)."""
+    try:
+        _require_token()
+        cache = _make_cache(ctx.obj["db"])
+        client = _make_client(ctx.obj["repo"])
+        svc = OnCallService(client, cache)
+
+        progress = None
+        if ctx.obj.get("verbose"):
+
+            def progress(msg):
+                click.echo(msg, err=True)
+
+        summary = svc.sync_weekly_branches(budget=budget, progress=progress)
+        click.echo(json.dumps(summary, indent=2))
+        if summary.get("auth_failed"):
+            click.echo(
+                "Error: GitHub authentication failed during release sync.",
+                err=True,
+            )
+            sys.exit(1)
+    except GitHubAPIError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+
+# ------------------------------------------------------------------
 # scorecard
 # ------------------------------------------------------------------
 
