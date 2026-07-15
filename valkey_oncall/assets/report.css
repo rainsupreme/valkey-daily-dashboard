@@ -113,3 +113,6 @@ pre { background: #161b22; padding: 12px; border-radius: 6px; overflow-x: auto;
    what keeps the labels out of the row below. */
 .date-col.rot{vertical-align:bottom;text-align:center;padding:4px 0 3px}
 .date-col.rot span{display:inline-block;writing-mode:vertical-rl;transform:rotate(180deg);white-space:nowrap;font-size:0.7rem;line-height:1.1;font-family:monospace}
+/* Cross-page navigation link (index <-> releases) */
+.rel-branch-link{color:#58a6ff;text-decoration:none}
+.rel-branch-link:hover{text-decoration:underline}

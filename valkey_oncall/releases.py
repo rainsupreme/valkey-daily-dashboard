@@ -238,8 +238,6 @@ ${styles}
 .rel-branch>summary{cursor:pointer;padding:8px 0;font-size:0.95rem}
 .rel-branch-title{font-weight:700;font-size:1.05rem;margin-right:6px}
 .rel-summary-inline{color:#8b949e;font-size:0.85rem;margin-left:8px}
-.rel-branch-link{color:#58a6ff;text-decoration:none}
-.rel-branch-link:hover{text-decoration:underline}
 </style>
 </head>
 <body>

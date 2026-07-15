@@ -225,6 +225,16 @@ class TestRenderReleasesHtml:
         # Cross-link to the main dashboard
         assert 'href="index.html"' in html_out
 
+    def test_index_page_links_to_releases(self, temp_db_path: str) -> None:
+        from valkey_oncall.report import generate_report_data, render_html
+
+        cache = _seed(temp_db_path)
+        idx = render_html(
+            generate_report_data(cache, workflow=WEEKLY_SPLIT_WORKFLOW, branch="8.0")
+        )
+        assert idx.count('href="releases.html"') == 1
+        assert "Release branch health" in idx
+
     def test_empty_dataset_renders(self, temp_db_path: str) -> None:
         from valkey_oncall.releases import render_releases_html
 
