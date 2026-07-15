@@ -290,6 +290,51 @@ class TestReleaseStrip:
         assert 'class="rel-strip"' not in idx
 
 
+class TestFailureDeepLinks:
+    """Heatmap fail cells and Run Details job names link to GitHub job logs."""
+
+    def test_source_run_id_roundtrip(self) -> None:
+        from valkey_oncall.weekly import source_run_id, synthetic_run_id
+
+        assert source_run_id(synthetic_run_id(29183329995, 3)) == 29183329995
+        assert source_run_id(12345) == 12345  # real ids pass through
+
+    def test_weekly_split_cells_link_to_real_run(self, temp_db_path: str) -> None:
+        from valkey_oncall.report import generate_report_data, _render_heatmap_table
+
+        cache = _seed(temp_db_path)  # synthetic ids -> real runs 1,2
+        data = generate_report_data(cache, workflow=WEEKLY_SPLIT_WORKFLOW, branch="8.0")
+        table = _render_heatmap_table(data)
+        # job 5 fails in synthetic run -200 -> real run id 2
+        assert (
+            'href="https://github.com/valkey-io/valkey/actions/runs/2/job/5"' in table
+        )
+        assert 'target="_blank" rel="noopener noreferrer"' in table
+
+    def test_daily_run_details_job_links(self, temp_db_path: str) -> None:
+        from valkey_oncall.report import generate_report_data, render_html
+
+        cache = _seed(temp_db_path)
+        data = generate_report_data(cache, workflow=WEEKLY_SPLIT_WORKFLOW, branch="8.0")
+        run = [r for r in data["runs"] if r["failed_jobs"]][0]
+        assert run["failed_job_urls"], "run_info should carry job urls"
+        page = render_html(data)
+        assert (
+            'class="job-link" href="https://github.com/valkey-io/valkey/actions/runs/'
+            in page
+        )
+
+    def test_timeline_entries_carry_job_urls(self, temp_db_path: str) -> None:
+        from valkey_oncall.report import generate_report_data
+
+        cache = _seed(temp_db_path)
+        data = generate_report_data(cache, workflow=WEEKLY_SPLIT_WORKFLOW, branch="9.0")
+        for info in data["tests"].values():
+            for entry in info["timeline"].values():
+                if entry is not None:
+                    assert entry["job_urls"], entry
+
+
 class TestRenderReleasesHtml:
     def test_layout_badges_and_defaults(self, temp_db_path: str) -> None:
         import re
