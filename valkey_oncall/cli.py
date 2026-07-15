@@ -419,6 +419,48 @@ def sync_releases(ctx: click.Context, budget: int) -> None:
 
 
 # ------------------------------------------------------------------
+# report-releases
+# ------------------------------------------------------------------
+
+
+@cli.command("report-releases")
+@click.option(
+    "--format",
+    "fmt",
+    type=click.Choice(["html", "json"]),
+    default="html",
+    show_default=True,
+    help="Output format.",
+)
+@click.option(
+    "-o",
+    "--output",
+    default=None,
+    help="Write output to this file instead of stdout.",
+)
+@click.pass_context
+def report_releases(ctx: click.Context, fmt: str, output: Optional[str]) -> None:
+    """Render the release-branch health page from cached weekly-split data.
+
+    Reads only the cache — run ``sync-releases`` first to ingest data.
+    """
+    from valkey_oncall.releases import generate_releases_data, render_releases_html
+
+    cache = _make_cache(ctx.obj["db"])
+    data = generate_releases_data(cache, repo=ctx.obj["repo"])
+    if fmt == "html":
+        out = render_releases_html(data)
+    else:
+        out = json.dumps(data, indent=2)
+    if output:
+        with open(output, "w") as fh:
+            fh.write(out)
+        click.echo(f"Wrote {output}", err=True)
+    else:
+        click.echo(out)
+
+
+# ------------------------------------------------------------------
 # scorecard
 # ------------------------------------------------------------------
 

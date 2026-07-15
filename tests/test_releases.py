@@ -241,3 +241,27 @@ class TestRenderReleasesHtml:
         html_out = render_releases_html(generate_releases_data(Cache(temp_db_path)))
         assert "Valkey Release Branch Health" in html_out
         assert "no data yet" in html_out
+
+
+class TestReportReleasesCli:
+    def test_html_and_json_outputs(self, temp_db_path: str, tmp_path) -> None:
+        from click.testing import CliRunner
+
+        from valkey_oncall.cli import cli
+
+        _seed(temp_db_path)
+        runner = CliRunner()
+
+        out_html = str(tmp_path / "releases.html")
+        result = runner.invoke(
+            cli, ["--db", temp_db_path, "report-releases", "-o", out_html]
+        )
+        assert result.exit_code == 0, result.output
+        assert "Valkey Release Branch Health" in open(out_html).read()
+
+        result = runner.invoke(
+            cli, ["--db", temp_db_path, "report-releases", "--format", "json"]
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["branches"] == ["9.0", "8.0"]
