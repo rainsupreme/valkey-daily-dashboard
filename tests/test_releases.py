@@ -300,7 +300,7 @@ class TestFailureDeepLinks:
         assert source_run_id(12345) == 12345  # real ids pass through
 
     def test_weekly_split_cells_link_to_real_run(self, temp_db_path: str) -> None:
-        from valkey_oncall.report import generate_report_data, _render_heatmap_table
+        from valkey_oncall.report import _render_heatmap_table, generate_report_data
 
         cache = _seed(temp_db_path)  # synthetic ids -> real runs 1,2
         data = generate_report_data(cache, workflow=WEEKLY_SPLIT_WORKFLOW, branch="8.0")
