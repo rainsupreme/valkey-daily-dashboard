@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import Dict, List
-from unittest.mock import MagicMock
 
 from valkey_oncall.cache import Cache
 from valkey_oncall.github_client import GitHubAPIError
