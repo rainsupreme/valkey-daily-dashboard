@@ -21,8 +21,13 @@ from typing import Dict, List
 
 from valkey_oncall.cache import Cache
 from valkey_oncall.report import (
+    REG_HEAD,
+    SC_HEAD,
     _asset,
+    _render_fixed_regressions,
     _render_heatmap_table,
+    _render_regression_rows,
+    _render_scorecard_rows,
     _sparkline,
     generate_report_data,
 )
@@ -243,6 +248,50 @@ def render_release_strip(summary_rows: List[Dict]) -> str:
     )
 
 
+def _branch_run_details(data: Dict) -> str:
+    """Per-branch weekly run tables — populated in the Run Details stage."""
+    return '<p class="hint">Run details are being added — see the Heatmap tab for per-week status meanwhile.</p>'
+
+
+def _branch_regressions(data: Dict) -> str:
+    """Per-branch regression tables (ongoing + fixed) for the Regressions tab."""
+    repo = data["summary"]["repo"]
+    sections = ""
+    for branch in data["branches"]:
+        d = data["per_branch"][branch]
+        regs = d.get("regressions", [])
+        ongoing = [r for r in regs if r.get("ongoing", True)]
+        fixed = [r for r in regs if not r.get("ongoing", True)]
+        sections += f'<h3 class="wf-title">{html.escape(branch)}</h3>'
+        if not ongoing and not fixed:
+            sections += '<p class="hint">No green→red regressions detected.</p>'
+            continue
+        sections += (
+            '<table class="scorecard-table">'
+            f"{REG_HEAD}<tbody>{_render_regression_rows(ongoing, repo)}</tbody></table>"
+            f"{_render_fixed_regressions(fixed, repo)}"
+        )
+    return sections
+
+
+def _branch_scorecards(data: Dict) -> str:
+    """Per-branch static flakiness scorecards for the Scorecard tab."""
+    sections = ""
+    for branch in data["branches"]:
+        d = data["per_branch"][branch]
+        cards = d.get("scorecard", {}).get("scorecards", [])
+        active = [c for c in cards if not c.get("resolved")]
+        sections += f'<h3 class="wf-title">{html.escape(branch)}</h3>'
+        if not active:
+            sections += '<p class="hint">No recorded test failures.</p>'
+            continue
+        sections += (
+            '<table class="scorecard-table">'
+            f"{SC_HEAD}<tbody>{_render_scorecard_rows(active)}</tbody></table>"
+        )
+    return sections
+
+
 def render_releases_html(data: Dict) -> str:
     """Render the releases page: summary strip + per-branch sections."""
     return Template(_RELEASES_TEMPLATE).substitute(
@@ -254,6 +303,9 @@ def render_releases_html(data: Dict) -> str:
         generated=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         summary_table=_summary_table(data["summary_rows"]),
         branch_sections=_branch_sections(data),
+        regression_sections=_branch_regressions(data),
+        scorecard_sections=_branch_scorecards(data),
+        run_details_sections=_branch_run_details(data),
     )
 
 
@@ -287,9 +339,40 @@ ${styles}
 
 ${summary_table}
 
-<p class="hint">A red <b>Run status</b> with no test rows below it — or a high "unattributed" count — means jobs died on build / sanitizer / setup / timeout before any test ran: the branch is structurally broken, not flaky. 🔴 sections start expanded; healthier branches are collapsed.</p>
+<div class="tabs" role="tablist">
+  <button class="tab active" data-tab="heatmap" role="tab">Heatmap</button>
+  <button class="tab" data-tab="regressions" role="tab">Regressions</button>
+  <button class="tab" data-tab="rundetails" role="tab">Run Details</button>
+  <button class="tab" data-tab="scorecard" role="tab">Flakiness Scorecard</button>
+</div>
 
+<div class="tab-panel active" id="tab-heatmap" role="tabpanel">
+<p class="hint">A red <b>Run status</b> with no test rows below it — or a high "unattributed" count — means jobs died on build / sanitizer / setup / timeout before any test ran: the branch is structurally broken, not flaky. 🔴 sections start expanded; healthier branches are collapsed. Failure cells link to the failing job's log.</p>
 ${branch_sections}
+</div>
+
+<div class="tab-panel" id="tab-regressions" role="tabpanel">
+<div class="section">
+<h2>Green→red regressions per release branch</h2>
+<p class="hint">Tests that went from consistently passing to failing, per branch. Onset is the first failing week; weekly cadence means onset resolution is "some week" and suspect ranges span a week of backports. Commit compare links are absent by design (the weekly run's SHA is the unstable tip, not the release branch tip).</p>
+${regression_sections}
+</div>
+</div>
+
+<div class="tab-panel" id="tab-rundetails" role="tabpanel">
+<div class="section">
+<h2>Weekly runs per release branch</h2>
+${run_details_sections}
+</div>
+</div>
+
+<div class="tab-panel" id="tab-scorecard" role="tabpanel">
+<div class="section">
+<h2>Flakiness scorecard per release branch</h2>
+<p class="hint">Every test that has failed in recorded weekly history, ranked worst-first per branch. Rate = share of recorded runs the test failed.</p>
+${scorecard_sections}
+</div>
+</div>
 
 <script>
 ${script}

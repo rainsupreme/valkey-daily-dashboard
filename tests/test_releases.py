@@ -335,6 +335,39 @@ class TestFailureDeepLinks:
                     assert entry["job_urls"], entry
 
 
+class TestReleasesTabs:
+    """Tab bar + Regressions/Scorecard panels on the releases page."""
+
+    def test_four_panels_heatmap_active(self, temp_db_path: str) -> None:
+        import re
+
+        from valkey_oncall.releases import render_releases_html
+
+        cache = _seed(temp_db_path)
+        h = render_releases_html(generate_releases_data(cache))
+        assert h.count('class="tab-panel') == 4
+        assert re.search(r'<div class="tab-panel active" id="tab-heatmap"', h)
+        for t in ("heatmap", "regressions", "rundetails", "scorecard"):
+            assert f'id="tab-{t}"' in h
+        # Summary strip stays above the tab bar
+        assert h.index('class="rel-summary"') < h.index('class="tabs"')
+
+    def test_per_branch_regression_and_scorecard_sections(
+        self, temp_db_path: str
+    ) -> None:
+        from valkey_oncall.releases import render_releases_html
+
+        cache = _seed(temp_db_path)
+        h = render_releases_html(generate_releases_data(cache))
+        reg = h.split('id="tab-regressions"')[1].split('id="tab-rundetails"')[0]
+        sc = h.split('id="tab-scorecard"')[1]
+        # One wf-title per branch in each panel (9.0 + 8.0 seeded)
+        assert reg.count('class="wf-title"') == 2
+        assert sc.count('class="wf-title"') == 2
+        # Scorecards populated for branches with failures
+        assert sc.count("scorecard-table") >= 1
+
+
 class TestRenderReleasesHtml:
     def test_layout_badges_and_defaults(self, temp_db_path: str) -> None:
         import re

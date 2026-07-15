@@ -81,6 +81,20 @@ def _asset(name: str) -> str:
     return (_ASSETS_DIR / name).read_text(encoding="utf-8")
 
 
+# Shared table heads for scorecard / regression tables (also used by the
+# releases page renderer).
+SC_HEAD = (
+    "<thead><tr><th>#</th><th>Test</th><th>Class</th><th>Trend</th>"
+    '<th>Category</th><th>Rate</th><th title="runs failed / total runs">Runs</th>'
+    "<th>Recent activity</th></tr></thead>"
+)
+REG_HEAD = (
+    "<thead><tr><th>Test</th><th>First failed</th><th>Last passed</th>"
+    "<th>Suspect range</th><th>Baseline</th><th>Surprise</th>"
+    "<th>Onset</th><th>Post-onset</th></tr></thead>"
+)
+
+
 def job_log_url(repo: str, run_id: int, job_id: int) -> str:
     """GitHub job-log page URL, valid for real and weekly-split run ids."""
     return (
@@ -571,16 +585,6 @@ def render_html(
     fixed_regressions = _render_fixed_regressions(fixed, repo)
 
     # --- CI (per-run) blocks stacked ABOVE the Daily views ---
-    _SC_HEAD = (
-        "<thead><tr><th>#</th><th>Test</th><th>Class</th><th>Trend</th>"
-        '<th>Category</th><th>Rate</th><th title="runs failed / total runs">Runs</th>'
-        "<th>Recent activity</th></tr></thead>"
-    )
-    _REG_HEAD = (
-        "<thead><tr><th>Test</th><th>First failed</th><th>Last passed</th>"
-        "<th>Suspect range</th><th>Baseline</th><th>Surprise</th>"
-        "<th>Onset</th><th>Post-onset</th></tr></thead>"
-    )
     ci_scorecard = ""
     ci_regressions = ""
     if ci_data:
@@ -589,7 +593,7 @@ def render_html(
         ci_scorecard = (
             '<h3 class="wf-title">CI · per-commit flakiness</h3>'
             '<table class="scorecard-table">'
-            f"{_SC_HEAD}<tbody>{_render_scorecard_rows(ci_active)}</tbody></table>"
+            f"{SC_HEAD}<tbody>{_render_scorecard_rows(ci_active)}</tbody></table>"
             '<h3 class="wf-title">Daily · nightly full suite</h3>'
         )
         ci_regs = ci_data.get("regressions", [])
@@ -598,7 +602,7 @@ def render_html(
         ci_regressions = (
             '<h3 class="wf-title">CI · per-commit regressions</h3>'
             '<table class="scorecard-table">'
-            f"{_REG_HEAD}<tbody>{_render_regression_rows(ci_ongoing, repo)}</tbody>"
+            f"{REG_HEAD}<tbody>{_render_regression_rows(ci_ongoing, repo)}</tbody>"
             "</table>"
             f"{_render_fixed_regressions(ci_fixed, repo)}"
             '<h3 class="wf-title">Daily · nightly full suite</h3>'
