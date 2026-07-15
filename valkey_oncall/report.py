@@ -431,11 +431,15 @@ def _render_heatmap_table(data: Dict) -> str:
 </table></div>{wrap_close}"""
 
 
-def render_html(data: Dict, ci_data: Dict | None = None) -> str:
+def render_html(
+    data: Dict, ci_data: Dict | None = None, releases_strip: str = ""
+) -> str:
     """Render the report data as a self-contained HTML file.
 
     *data* is the Daily (nightly, per-day) report. When *ci_data* (the CI,
     per-run report) is provided, each tab stacks the CI view on top of Daily.
+    *releases_strip* is pre-rendered release-health badge HTML (from
+    releases.render_release_strip); empty when there is no weekly data.
     """
     summary = data["summary"]
     runs = data["runs"]
@@ -579,6 +583,7 @@ def render_html(data: Dict, ci_data: Dict | None = None) -> str:
         unique_tests=summary["unique_tests_failed"],
         generated=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         heatmap_body=heatmap_body,
+        releases_strip=releases_strip,
         ci_scorecard=ci_scorecard,
         ci_regressions=ci_regressions,
         run_detail_rows=run_detail_rows,
@@ -1070,6 +1075,7 @@ ${styles}
 <h1>Valkey CI Failure Report</h1>
 <p class="meta">${workflow} · ${branch} · ${repo} · last ${days} days · generated ${generated} · <a href="releases.html" class="rel-branch-link" title="weekly full-suite health per supported release branch (7.2, 8.0, ...)">Release branch health →</a></p>
 <p class="hint">Valkey CI failure trends for the <b>${branch}</b> branch — nightly Daily suite and per-commit CI. Tracks which tests fail, how often, and whether they are getting better or worse.</p>
+${releases_strip}
 
 <div class="stats">
   <div class="stat"><div class="stat-val">${total_runs}</div><div class="stat-label">runs</div></div>

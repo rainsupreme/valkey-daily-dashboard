@@ -245,6 +245,51 @@ class TestSanitizeStripsFanoutPrefix:
         assert timeline["2026-07-12"] is not None
 
 
+class TestReleaseStrip:
+    """Compact release-health strip embedded on the main (daily/CI) page."""
+
+    def test_badges_link_and_label(self, temp_db_path: str) -> None:
+        from valkey_oncall.releases import render_release_strip
+
+        cache = _seed(temp_db_path)
+        rows = generate_releases_data(cache)["summary_rows"]
+        strip = render_release_strip(rows)
+        assert 'href="releases.html#branch-9.0"' in strip
+        assert 'href="releases.html#branch-8.0"' in strip
+        assert "🔴" in strip  # both seeded branches are crit
+        assert "1/2" in strip and "2/2" in strip
+        assert "Release branches (weekly):" in strip
+        assert "build broken" in strip  # tooltip on 9.0
+
+    def test_empty_rows_render_nothing(self) -> None:
+        from valkey_oncall.releases import render_release_strip
+
+        assert render_release_strip([]) == ""
+
+    def test_main_page_embeds_strip(self, temp_db_path: str) -> None:
+        from valkey_oncall.releases import render_release_strip
+        from valkey_oncall.report import generate_report_data, render_html
+
+        cache = _seed(temp_db_path)
+        rows = generate_releases_data(cache)["summary_rows"]
+        idx = render_html(
+            generate_report_data(cache, workflow=WEEKLY_SPLIT_WORKFLOW, branch="8.0"),
+            releases_strip=render_release_strip(rows),
+        )
+        assert idx.count('class="rel-strip"') == 1
+        assert 'href="releases.html#branch-9.0"' in idx
+
+    def test_main_page_without_strip_unchanged(self, temp_db_path: str) -> None:
+        """Default render (no strip arg) must not emit any strip markup."""
+        from valkey_oncall.report import generate_report_data, render_html
+
+        cache = _seed(temp_db_path)
+        idx = render_html(
+            generate_report_data(cache, workflow=WEEKLY_SPLIT_WORKFLOW, branch="8.0")
+        )
+        assert 'class="rel-strip"' not in idx
+
+
 class TestRenderReleasesHtml:
     def test_layout_badges_and_defaults(self, temp_db_path: str) -> None:
         import re

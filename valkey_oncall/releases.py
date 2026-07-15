@@ -203,6 +203,46 @@ def _branch_sections(data: Dict) -> str:
     return sections
 
 
+_STRIP_EMOJI = {"ok": "🟢", "warn": "🟡", "crit": "🔴"}
+
+
+def render_release_strip(summary_rows: List[Dict]) -> str:
+    """Compact release-health strip for the main (daily/CI) page header.
+
+    One badge per branch — ``9.1 🟡 3/52`` — deep-linking to that branch's
+    section on releases.html. Returns "" when there is no weekly data yet
+    (graceful pre-backfill degradation).
+    """
+    if not summary_rows:
+        return ""
+    badges = ""
+    for row in summary_rows:
+        b = html.escape(row["branch"])
+        emoji = _STRIP_EMOJI.get(row["tier"], "🟡")
+        state = (
+            "build broken"
+            if row.get("build_broken")
+            else {
+                "ok": "healthy",
+                "warn": "some job failures",
+                "crit": "unhealthy",
+            }.get(row["tier"], "")
+        )
+        tip = html.escape(
+            f"{row['branch']}: {state} — {row['failed_jobs']}/{row['total_jobs']} "
+            f"jobs failed in the week of {row['latest_week'] or '?'}"
+        )
+        badges += (
+            f'<a class="rel-strip-badge" href="releases.html#branch-{b}" '
+            f'title="{tip}">{b} {emoji} '
+            f'<span class="rel-strip-jobs">{row["failed_jobs"]}/{row["total_jobs"]}</span></a>'
+        )
+    return (
+        '<div class="rel-strip"><span class="rel-strip-label">Release branches '
+        "(weekly):</span>" + badges + "</div>"
+    )
+
+
 def render_releases_html(data: Dict) -> str:
     """Render the releases page: summary strip + per-branch sections."""
     return Template(_RELEASES_TEMPLATE).substitute(

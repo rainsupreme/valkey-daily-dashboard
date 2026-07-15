@@ -40,6 +40,25 @@ def _make_client(repo: str = DEFAULT_REPO) -> GitHubActionsClient:
     return GitHubActionsClient(token=token, repo=repo)
 
 
+def _release_strip(cache, repo: str) -> str:
+    """Best-effort release-health strip HTML for the main page.
+
+    Empty string when there is no weekly-split data yet, and never raises —
+    the strip must not be able to break the main report render.
+    """
+    try:
+        from valkey_oncall.releases import (
+            generate_releases_data,
+            render_release_strip,
+        )
+
+        rel = generate_releases_data(cache, repo=repo)
+        return render_release_strip(rel["summary_rows"])
+    except Exception as exc:  # pragma: no cover - defensive
+        click.echo(f"Warning: release strip skipped: {exc}", err=True)
+        return ""
+
+
 def _require_token() -> str:
     """Return the GITHUB_TOKEN or exit with an error."""
     token = os.environ.get("GITHUB_TOKEN")
@@ -733,7 +752,9 @@ def report(
                 per_run=True,
                 max_runs=40,
             )
-        content = render_html(data, ci_data=ci_data)
+        content = render_html(
+            data, ci_data=ci_data, releases_strip=_release_strip(cache, repo)
+        )
     else:
         content = renderers[fmt](data)
 
