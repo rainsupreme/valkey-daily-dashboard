@@ -104,7 +104,7 @@ def job_log_url(repo: str, run_id: int, job_id: int) -> str:
 
 def generate_report_data(
     cache: Cache,
-    days: int = 14,
+    days: int = 30,
     branch: str = "unstable",
     workflow: str = "daily.yml",
     repo: str = "valkey-io/valkey",
@@ -386,11 +386,12 @@ def _render_heatmap_table(data: Dict) -> str:
         )
         run_status_cells += f'<td class="cell {cls}" title="{html.escape(title)}"></td>'
 
-    recent_hdr = "win" if per_run else "14d"
+    n_days = len(dates)
+    recent_hdr = "win" if per_run else f"{n_days}d"
     recent_ttl = (
         "Failure rate across the shown run window"
         if per_run
-        else "Failure rate over last 14 days"
+        else f"Failure rate over last {n_days} days"
     )
 
     test_rows = ""
@@ -459,7 +460,7 @@ def _render_heatmap_table(data: Dict) -> str:
     scroll_cls = "heatmap-scroll scroll-right" if per_run else "heatmap-scroll"
     wrap_open = '<div class="heatmap-scroll-wrap has-fade">' if per_run else ""
     wrap_close = "</div>" if per_run else ""
-    return f"""{wrap_open}<div class="{scroll_cls}"><table>
+    return f"""{wrap_open}<div class="{scroll_cls}"><table data-total-cols="{len(columns)}">
   {caption}
   <thead>
     <tr><th class="test-name">Test</th><th class="freq" title="{recent_ttl}">{recent_hdr}</th><th class="freq" title="Failure rate over last 90 days">90d</th>{date_headers}</tr>

@@ -131,3 +131,69 @@ function initHeatmapScroll() {
 initHeatmapScroll();
 // Re-apply once layout/fonts settle (rotated SHA headers affect width).
 window.addEventListener("load", initHeatmapScroll);
+
+// Adaptive heatmap columns: show as many date columns as fit the viewport,
+// with a minimum of 14. Oldest (leftmost) columns are hidden first.
+(function () {
+  var MIN_COLS = 14;
+  // Fixed-width budget per date column (matches .date-col min-width: 32px)
+  var COL_WIDTH = 32;
+  // Non-date columns: test-name (~340px) + freq (~50px) + 90d (~50px) + padding
+  var FIXED_WIDTH = 460;
+  var styleEl = null;
+
+  function adaptColumns() {
+    var tables = document.querySelectorAll("table[data-total-cols]");
+    if (!tables.length) return;
+
+    // Remove previous adaptive style
+    if (styleEl) styleEl.remove();
+    styleEl = document.createElement("style");
+    document.head.appendChild(styleEl);
+
+    var rules = [];
+    tables.forEach(function (table, idx) {
+      var totalCols = parseInt(table.getAttribute("data-total-cols"), 10);
+      if (!totalCols || totalCols <= MIN_COLS) return;
+
+      // Measure available width from the table's scroll container
+      var container = table.closest(".heatmap-scroll") || table.parentElement;
+      var available = container ? container.clientWidth : window.innerWidth;
+      var colBudget = Math.floor((available - FIXED_WIDTH) / COL_WIDTH);
+      var show = Math.max(MIN_COLS, Math.min(totalCols, colBudget));
+      var hide = totalCols - show;
+
+      if (hide <= 0) return;
+
+      // Add a unique class for CSS targeting
+      var cls = "hm-adaptive-" + idx;
+      table.classList.add(cls);
+
+      // Date columns start at child position 4 (after test-name, freq, 90d).
+      // Hide the first `hide` date columns (oldest).
+      var start = 4; // 1-indexed nth-child
+      var end = start + hide - 1;
+      rules.push(
+        "." + cls + " tr > :nth-child(n+" + start + "):nth-child(-n+" + end + ")" +
+        "{display:none}"
+      );
+    });
+
+    styleEl.textContent = rules.join("\n");
+  }
+
+  // Run on load and resize (debounced)
+  var resizeTimer;
+  window.addEventListener("resize", function () {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(adaptColumns, 150);
+  });
+
+  // Initial run after layout settles
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", adaptColumns);
+  } else {
+    requestAnimationFrame(adaptColumns);
+  }
+  window.addEventListener("load", adaptColumns);
+})();

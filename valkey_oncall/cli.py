@@ -620,7 +620,7 @@ def blame(
 
 @cli.command()
 @click.option(
-    "--days", default=14, show_default=True, help="Number of days of history."
+    "--days", default=30, show_default=True, help="Number of days of history."
 )
 @click.option(
     "--branch", default="unstable", show_default=True, help="Branch to report on."
