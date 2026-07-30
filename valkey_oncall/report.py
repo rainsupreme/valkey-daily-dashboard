@@ -43,6 +43,11 @@ HEATMAP_WARN_CI = 0.90
 HEATMAP_WARN_MEANINGFUL_RATE = 0.05
 HEATMAP_WARN_MIN_FAILURES = 2
 
+# Collapse heatmap rows with identical failure-day signatures into one
+# expandable cluster row when at least this many tests share the signature
+# (a single regression breaking many tests at once floods the table).
+HEATMAP_CLUSTER_MIN = 5
+
 
 def stale_reason(
     latest_run_date: str | None,
@@ -395,7 +400,9 @@ def _render_heatmap_table(data: Dict) -> str:
     )
 
     test_rows = ""
-    for test_name, info in tests.items():
+
+    def _test_row(test_name: str, info: Dict, row_attrs: str = "") -> str:
+        """Render one test's <tr>. *row_attrs* is injected into the tag."""
         short_name = _short_test_name(test_name)
         freq_pct = round(info["days_failed"] / len(dates) * 100) if dates else 0
         score_90d = info.get("score_90d", 0)
@@ -431,17 +438,93 @@ def _render_heatmap_table(data: Dict) -> str:
                 f">={warn_lb * 100:.0f}% of runs since {onset}. Click for details."
             )
             warn_marker = f'<a class="regwarn" href="#regressions" title="{wtip}">⚠️</a>'
-        test_rows += f"""<tr>
+        return f"""<tr{row_attrs}>
             <td class="test-name" title="{html.escape(test_name)}">{warn_marker}{html.escape(short_name)}</td>
             <td class="freq">{freq_pct}%</td>
             <td class="freq" title="Failed {score_90d:.1f}% of runs in last 90 days">{score_str}</td>
             {cells}
         </tr>"""
 
+    # Cluster rows with identical failure-day signatures. One regression
+    # breaking many tests at once produces a block of visually identical
+    # rows; collapse clusters of HEATMAP_CLUSTER_MIN+ under a single
+    # expandable summary row so the table stays scannable.
+    sig_members: Dict[tuple, List[str]] = defaultdict(list)
+    for test_name, info in tests.items():
+        sig = tuple(d for d in dates if info["timeline"][d] is not None)
+        if sig:
+            sig_members[sig].append(test_name)
+    clustered: Dict[str, int] = {}  # member test_name -> group id
+    groups: List[List[str]] = []
+    for sig, members in sig_members.items():
+        if len(members) >= HEATMAP_CLUSTER_MIN:
+            for m in members:
+                clustered[m] = len(groups)
+            groups.append(members)
+
+    def _cluster_row(gid: int, members: List[str]) -> str:
+        """Render a cluster's collapsed summary row (toggled by report.js)."""
+        n = len(members)
+        first = tests[members[0]]
+        sig_set = {d for d in dates if first["timeline"][d] is not None}
+        cells = ""
+        for d in dates:
+            if d in sig_set:
+                cells += (
+                    f'<td class="cell fail" '
+                    f'title="{n} tests failed · click row to expand">{n}</td>'
+                )
+            else:
+                cells += '<td class="cell none" title="no failure"></td>'
+        freq_pct = round(len(sig_set) / len(dates) * 100) if dates else 0
+        max_90d = max(tests[m].get("score_90d", 0) for m in members)
+        max_str = f"{max_90d:.0f}%" if max_90d >= 1 else f"{max_90d:.1f}%"
+        warn_marker = ""
+        warned = [m for m in members if m in reg_warnings]
+        if warned:
+            wtip = html.escape(
+                f"{len(warned)} of these tests flagged as likely regressions. "
+                "Click for details."
+            )
+            warn_marker = f'<a class="regwarn" href="#regressions" title="{wtip}">⚠️</a>'
+        preview = ", ".join(_short_test_name(m) for m in members[:3])
+        if n > 3:
+            preview += f", … +{n - 3} more"
+        return f"""<tr class="hm-cluster-toggle" data-group="{gid}" title="{html.escape(preview)}">
+            <td class="test-name"><span class="hm-caret">▸</span> {warn_marker}{n} tests · identical failure days</td>
+            <td class="freq">{freq_pct}%</td>
+            <td class="freq" title="Worst 90-day rate in this cluster">{max_str}</td>
+            {cells}
+        </tr>"""
+
+    emitted: set = set()
+    for test_name, info in tests.items():
+        gid = clustered.get(test_name)
+        if gid is None:
+            test_rows += _test_row(test_name, info)
+        elif gid not in emitted:
+            emitted.add(gid)
+            test_rows += _cluster_row(gid, groups[gid])
+            for m in groups[gid]:
+                test_rows += _test_row(
+                    m,
+                    tests[m],
+                    row_attrs=(
+                        f' class="hm-cluster-member" data-group="{gid}"'
+                        ' style="display:none"'
+                    ),
+                )
+
     if per_run:
         cap_lead = "Columns are merge runs (one per commit)"
     else:
         cap_lead = "Columns are days"
+    cluster_note = (
+        f" <b>{sum(len(g) for g in groups)} tests</b> with identical failure "
+        "days are collapsed into cluster rows — click a ▸ row to expand."
+        if groups
+        else ""
+    )
     caption = (
         '<caption class="hint" style="text-align:left; caption-side:top; '
         'margin-bottom:8px;">'
@@ -455,6 +538,7 @@ def _render_heatmap_table(data: Dict) -> str:
         'background:#21262d; border-radius:2px; vertical-align:middle;"></span> no failure.'
         " A red <b>Run status</b> with no test cells below it means the run "
         "failed on build / sanitizer / setup / timeout — no individual test failed."
+        f"{cluster_note}"
         "</caption>"
     )
     scroll_cls = "heatmap-scroll scroll-right" if per_run else "heatmap-scroll"

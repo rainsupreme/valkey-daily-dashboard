@@ -197,3 +197,25 @@ window.addEventListener("load", initHeatmapScroll);
   }
   window.addEventListener("load", adaptColumns);
 })();
+
+// Collapsible failure clusters: rows with identical failure-day signatures
+// are grouped under a single summary row (rendered by _render_heatmap_table).
+// Clicking the summary row toggles its member rows. Scoped to the containing
+// table so group ids only need to be unique per table.
+(function () {
+  document.querySelectorAll("tr.hm-cluster-toggle").forEach(function (row) {
+    row.addEventListener("click", function (e) {
+      if (e.target.closest("a")) return; // let the ⚠️ regression link navigate
+      var g = row.getAttribute("data-group");
+      var table = row.closest("table");
+      var expanded = row.classList.toggle("hm-expanded");
+      var caret = row.querySelector(".hm-caret");
+      if (caret) caret.textContent = expanded ? "▾" : "▸";
+      table
+        .querySelectorAll('tr.hm-cluster-member[data-group="' + g + '"]')
+        .forEach(function (r) {
+          r.style.display = expanded ? "" : "none";
+        });
+    });
+  });
+})();

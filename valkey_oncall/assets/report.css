@@ -87,6 +87,14 @@ pre { background: #161b22; padding: 12px; border-radius: 6px; overflow-x: auto;
 
 .regwarn{text-decoration:none;margin-right:5px;cursor:pointer;font-size:0.85rem}
 
+/* Collapsible failure clusters (rows with identical failure-day signatures) */
+.hm-cluster-toggle{cursor:pointer}
+.hm-cluster-toggle .test-name{color:#adbac7;font-style:italic}
+.hm-cluster-toggle:hover .test-name{color:#f0f6fc}
+.hm-caret{display:inline-block;width:12px;color:#8b949e;font-style:normal}
+.hm-cluster-member .test-name{padding-left:20px}
+.hm-cluster-toggle .cell.fail{background:#7d2724;color:#e6c8c7}
+
 .wf-title{font-size:0.95rem;font-weight:600;margin:16px 0 6px;color:#adbac7;border-top:1px solid #21262d;padding-top:10px}
 .wf-daily>summary{cursor:pointer;color:#8b949e;font-size:0.9rem;margin:10px 0}
 .wf-daily[open]>summary{margin-bottom:6px}

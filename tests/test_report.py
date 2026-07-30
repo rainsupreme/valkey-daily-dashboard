@@ -571,3 +571,60 @@ class TestDualWorkflowRender:
         assert "Columns are days" in html
         assert "CI · " not in html
         assert 'class="wf-daily"' not in html
+
+
+class TestFailureClusters:
+    """Rows with identical failure-day signatures collapse into cluster rows."""
+
+    def _store_many(self, cache, run_id, job_id, date, names):
+        cache.store_runs([_make_run(run_id, date)])
+        cache.store_jobs(run_id, [_make_job(job_id, run_id)])
+        cache.store_failures(
+            job_id,
+            [{"test_name": n, "error_summary": "err", "log_lines": "x"} for n in names],
+        )
+
+    def test_five_plus_identical_rows_collapse(self, cache):
+        names = [f"regr case {i} in tests/unit/a.tcl" for i in range(6)]
+        # Same six tests fail on the same two days -> one signature, 6 members.
+        self._store_many(cache, 100, 200, _day(3), names)
+        self._store_many(cache, 101, 201, _day(2), names)
+        # A test with a different signature stays a normal row.
+        _store_failure(cache, 102, 202, _day(1), "unique in tests/unit/b.tcl")
+
+        html = render_html(generate_report_data(cache, days=14))
+
+        assert 'class="hm-cluster-toggle"' in html
+        assert "6 tests · identical failure days" in html
+        # All six member rows present but hidden by default.
+        assert html.count('class="hm-cluster-member"') == 6
+        assert html.count('class="hm-cluster-member" data-group="0"') == 6
+        # Caption mentions the collapse.
+        assert "collapsed into cluster rows" in html
+        # The unique test is not part of any cluster.
+        unique_pos = html.index("unique in tests/unit/b.tcl")
+        row_start = html.rindex("<tr", 0, unique_pos)
+        assert "hm-cluster-member" not in html[row_start:unique_pos]
+
+    def test_below_threshold_rows_stay_flat(self, cache):
+        names = [f"few case {i} in tests/unit/a.tcl" for i in range(4)]
+        self._store_many(cache, 100, 200, _day(2), names)
+
+        html = render_html(generate_report_data(cache, days=14))
+
+        assert 'class="hm-cluster-toggle"' not in html
+        assert 'class="hm-cluster-member"' not in html
+        assert "collapsed into cluster rows" not in html
+
+    def test_different_signatures_not_merged(self, cache):
+        # Five tests share days {3,2}; five others share only day {2}.
+        group_a = [f"a case {i} in tests/unit/a.tcl" for i in range(5)]
+        group_b = [f"b case {i} in tests/unit/b.tcl" for i in range(5)]
+        self._store_many(cache, 100, 200, _day(3), group_a)
+        self._store_many(cache, 101, 201, _day(2), group_a + group_b)
+
+        html = render_html(generate_report_data(cache, days=14))
+
+        # Two distinct clusters, not one merged blob.
+        assert html.count('class="hm-cluster-toggle"') == 2
+        assert html.count("5 tests · identical failure days") == 2
