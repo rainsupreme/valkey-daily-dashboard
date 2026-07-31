@@ -48,6 +48,13 @@ HEATMAP_WARN_MIN_FAILURES = 2
 # (a single regression breaking many tests at once floods the table).
 HEATMAP_CLUSTER_MIN = 5
 
+# Heatmap trend sparkline: 7-day moving-average overlay, and the half-life
+# for the recency-weighted (EWMA) flakiness number in the tooltip. The decay
+# lets a formerly-flaky test that got fixed read as reliable within a few
+# weeks, unlike a flat 90-day average.
+HEATMAP_SPARK_MA_WINDOW = 7
+HEATMAP_EWMA_HALF_LIFE = 21
+
 
 def stale_reason(
     latest_run_date: str | None,
@@ -391,22 +398,50 @@ def _render_heatmap_table(data: Dict) -> str:
         )
         run_status_cells += f'<td class="cell {cls}" title="{html.escape(title)}"></td>'
 
-    n_days = len(dates)
-    recent_hdr = "win" if per_run else f"{n_days}d"
-    recent_ttl = (
-        "Failure rate across the shown run window"
+    # Trend sparkline data: the embedded 90-day scorecard already carries a
+    # per-day failure series and quiet-run counts for every test in it.
+    sc_by_name = {
+        sc["test_name"]: sc for sc in data.get("scorecard", {}).get("scorecards", [])
+    }
+    trend_hdr = "trend" if per_run else "90d trend"
+    trend_ttl = (
+        "Per-run failures over the scorecard window; blue line = "
+        f"{HEATMAP_SPARK_MA_WINDOW}-run moving average"
         if per_run
-        else f"Failure rate over last {n_days} days"
+        else f"Daily failures over the last 90 days; blue line = "
+        f"{HEATMAP_SPARK_MA_WINDOW}-day moving average"
     )
+    unit = "runs" if per_run else "days"
+
+    def _trend_cell(series: List[int], sc: Dict | None, prefix: str = "") -> str:
+        """One spark <td>: bars + MA line, EWMA/recency facts in the tooltip."""
+        ewma_pct = _ewma_rate([1 if v else 0 for v in series]) * 100
+        fdays = sum(1 for v in series if v)
+        parts = [
+            f"{prefix}flakiness {ewma_pct:.0f}% (recent-weighted, "
+            f"{HEATMAP_EWMA_HALF_LIFE}-{unit[:-1]} half-life)"
+        ]
+        if sc is not None:
+            quiet = sc.get("runs_since_last_fail", 0)
+            parts.append(
+                "last failed in the latest run"
+                if quiet == 0
+                else f"last failed {quiet} runs ago"
+            )
+        parts.append(f"failed {fdays} of {len(series)} {unit} in window")
+        tip = html.escape(" · ".join(parts))
+        return (
+            f'<td class="spark-cell" title="{tip}">'
+            f"{_sparkline(series, ma_window=HEATMAP_SPARK_MA_WINDOW)}</td>"
+        )
 
     test_rows = ""
 
     def _test_row(test_name: str, info: Dict, row_attrs: str = "") -> str:
         """Render one test's <tr>. *row_attrs* is injected into the tag."""
         short_name = _short_test_name(test_name)
-        freq_pct = round(info["days_failed"] / len(dates) * 100) if dates else 0
-        score_90d = info.get("score_90d", 0)
-        score_str = f"{score_90d:.0f}%" if score_90d >= 1 else f"{score_90d:.1f}%"
+        sc = sc_by_name.get(test_name)
+        series = (sc or {}).get("daily_series", [])
         cells = ""
         for d in dates:
             entry = info["timeline"][d]
@@ -440,8 +475,7 @@ def _render_heatmap_table(data: Dict) -> str:
             warn_marker = f'<a class="regwarn" href="#regressions" title="{wtip}">⚠️</a>'
         return f"""<tr{row_attrs}>
             <td class="test-name" title="{html.escape(test_name)}">{warn_marker}{html.escape(short_name)}</td>
-            <td class="freq">{freq_pct}%</td>
-            <td class="freq" title="Failed {score_90d:.1f}% of runs in last 90 days">{score_str}</td>
+            {_trend_cell(series, sc)}
             {cells}
         </tr>"""
 
@@ -477,8 +511,16 @@ def _render_heatmap_table(data: Dict) -> str:
             else:
                 cells += '<td class="cell none" title="no failure"></td>'
         freq_pct = round(len(sig_set) / len(dates) * 100) if dates else 0
-        max_90d = max(tests[m].get("score_90d", 0) for m in members)
-        max_str = f"{max_90d:.0f}%" if max_90d >= 1 else f"{max_90d:.1f}%"
+        # Envelope trend: element-wise max of the members' daily series,
+        # representing the cluster's shared failure pattern honestly.
+        member_series = [
+            s for m in members if (s := sc_by_name.get(m, {}).get("daily_series", []))
+        ]
+        env: List[int] = []
+        if member_series:
+            longest = max(len(s) for s in member_series)
+            padded = [[0] * (longest - len(s)) + s for s in member_series]
+            env = [max(col) for col in zip(*padded)]
         warn_marker = ""
         warned = [m for m in members if m in reg_warnings]
         if warned:
@@ -492,8 +534,7 @@ def _render_heatmap_table(data: Dict) -> str:
             preview += f", … +{n - 3} more"
         return f"""<tr class="hm-cluster-toggle" data-group="{gid}" title="{html.escape(preview)}">
             <td class="test-name"><span class="hm-caret">▸</span> {warn_marker}{n} tests · identical failure days</td>
-            <td class="freq">{freq_pct}%</td>
-            <td class="freq" title="Worst 90-day rate in this cluster">{max_str}</td>
+            {_trend_cell(env, None, prefix=f"cluster envelope ({freq_pct}% of shown {unit}) · ")}
             {cells}
         </tr>"""
 
@@ -547,8 +588,8 @@ def _render_heatmap_table(data: Dict) -> str:
     return f"""{wrap_open}<div class="{scroll_cls}"><table data-total-cols="{len(columns)}">
   {caption}
   <thead>
-    <tr><th class="test-name">Test</th><th class="freq" title="{recent_ttl}">{recent_hdr}</th><th class="freq" title="Failure rate over last 90 days">90d</th>{date_headers}</tr>
-    <tr><td class="test-name" style="color:#8b949e">Run status</td><td></td><td></td>{run_status_cells}</tr>
+    <tr><th class="test-name">Test</th><th class="spark-col" title="{trend_ttl}">{trend_hdr}</th>{date_headers}</tr>
+    <tr><td class="test-name" style="color:#8b949e">Run status</td><td></td>{run_status_cells}</tr>
   </thead>
   <tbody>
     {test_rows}
@@ -926,16 +967,39 @@ def _render_failure_names(
     return f'<div class="failure-list">{items}</div>'
 
 
+def _ewma_rate(series: List[int], half_life: int = HEATMAP_EWMA_HALF_LIFE) -> float:
+    """Recency-weighted failure rate over a per-day series (newest last).
+
+    Each day contributes its failed/not-failed bit weighted by
+    ``0.5 ** (age / half_life)``, so recent behavior dominates: a test that
+    was flaky but got fixed decays toward 0 within a few half-lives, while
+    a chronically flaky test holds its level.
+    """
+    if not series:
+        return 0.0
+    n = len(series)
+    wsum = 0.0
+    fsum = 0.0
+    for i, v in enumerate(series):
+        w = 0.5 ** ((n - 1 - i) / half_life)
+        wsum += w
+        if v:
+            fsum += w
+    return fsum / wsum if wsum else 0.0
+
+
 def _sparkline(
     series: List[int],
     width: int = 90,
     height: int = 16,
     mark_index: int | None = None,
+    ma_window: int | None = None,
 ) -> str:
     """Render a per-day failure-count series as a compact inline SVG bar chart.
 
     If *mark_index* is given, a vertical tick is drawn at that bar to mark a
-    regime change (e.g. a regression's onset run).
+    regime change (e.g. a regression's onset run). If *ma_window* is given,
+    a thin trailing moving-average polyline is drawn over the bars.
     """
     if not series:
         return ""
@@ -958,6 +1022,18 @@ def _sparkline(
         bars.append(
             f'<rect x="{max(0.0, mx_x - 1):.2f}" y="0" width="2" height="{height}" '
             f'fill="#d29922"><title>onset</title></rect>'
+        )
+    if ma_window and n >= 2:
+        pts = []
+        for i in range(n):
+            lo = max(0, i - ma_window + 1)
+            avg = sum(series[lo : i + 1]) / (i - lo + 1)
+            x = i * step + bw / 2
+            y = height - 1 - (avg / mx) * (height - 3)
+            pts.append(f"{x:.2f},{y:.2f}")
+        bars.append(
+            f'<polyline points="{" ".join(pts)}" fill="none" '
+            f'stroke="#58a6ff" stroke-width="1" vector-effect="non-scaling-stroke"/>'
         )
     return (
         f'<svg class="spark" width="100%" height="{height}" '

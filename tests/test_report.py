@@ -628,3 +628,67 @@ class TestFailureClusters:
         # Two distinct clusters, not one merged blob.
         assert html.count('class="hm-cluster-toggle"') == 2
         assert html.count("5 tests · identical failure days") == 2
+
+
+class TestEwmaRate:
+    def test_empty_series_is_zero(self):
+        from valkey_oncall.report import _ewma_rate
+
+        assert _ewma_rate([]) == 0.0
+
+    def test_constant_series_matches_flat_rate(self):
+        from valkey_oncall.report import _ewma_rate
+
+        assert _ewma_rate([0] * 90) == 0.0
+        assert _ewma_rate([1] * 90) == pytest.approx(1.0)
+
+    def test_fixed_test_decays_below_flat_average(self):
+        from valkey_oncall.report import _ewma_rate
+
+        # Flaky for the first 45 days, clean for the last 45: flat average
+        # says 50%, the recency weighting should read it as mostly fixed.
+        series = [1] * 45 + [0] * 45
+        rate = _ewma_rate(series)
+        assert rate < 0.25
+
+    def test_fresh_regression_reads_above_flat_average(self):
+        from valkey_oncall.report import _ewma_rate
+
+        # Clean for 80 days, failing the last 10.
+        series = [0] * 80 + [1] * 10
+        assert _ewma_rate(series) > 10 / 90
+
+
+class TestHeatmapTrendColumn:
+    def test_trend_sparkline_replaces_numeric_columns(self, cache):
+        _store_failure(cache, 100, 200, _day(2), "recent in tests/unit/b.tcl")
+
+        html = render_html(generate_report_data(cache, days=14))
+
+        assert "90d trend" in html
+        assert 'class="spark-cell"' in html
+        assert "recent-weighted" in html
+        # The old numeric heatmap columns are gone.
+        assert 'title="Failure rate over last 90 days"' not in html
+
+    def test_tooltip_carries_recency_facts(self, cache):
+        _store_failure(cache, 100, 200, _day(2), "recent in tests/unit/b.tcl")
+
+        html = render_html(generate_report_data(cache, days=14))
+
+        assert "last failed" in html
+        assert "in window" in html
+
+    def test_cluster_row_gets_envelope_trend(self, cache):
+        names = [f"regr case {i} in tests/unit/a.tcl" for i in range(6)]
+        cache.store_runs([_make_run(100, _day(2))])
+        cache.store_jobs(100, [_make_job(200, 100)])
+        cache.store_failures(
+            200,
+            [{"test_name": n, "error_summary": "err", "log_lines": "x"} for n in names],
+        )
+
+        html = render_html(generate_report_data(cache, days=14))
+
+        assert 'class="hm-cluster-toggle"' in html
+        assert "cluster envelope" in html

@@ -66,6 +66,9 @@ pre { background: #161b22; padding: 12px; border-radius: 6px; overflow-x: auto;
 .cat-chip { background:#161b22; border:1px solid #30363d; color:#8b949e; padding:1px 6px; border-radius:4px; font-size: 0.625rem; }
 .spark { vertical-align: middle; width: 100%; min-width: 90px; height: 16px; display: block; }
 .spark-cell { width: 99%; }
+/* Heatmap trend column: fixed footprint so date cells keep their grid */
+.spark-col { min-width: 100px; font-size: 0.6875rem; }
+.heatmap-scroll .spark-cell { width: 100px; min-width: 100px; max-width: 100px; padding: 3px 6px; }
 .stale-row { opacity: 0.45; }
 .resolved-block { margin-top: 18px; }
 .resolved-block summary { color: #8b949e; font-size: 0.75rem; margin-bottom: 8px; }
