@@ -278,7 +278,12 @@ class TestReleaseStrip:
         cache = _seed(temp_db_path)
         rows = generate_releases_data(cache)["summary_rows"]
         idx = render_html(
-            generate_report_data(cache, days=SEED_WINDOW_DAYS, workflow=WEEKLY_SPLIT_WORKFLOW, branch="8.0"),
+            generate_report_data(
+                cache,
+                days=SEED_WINDOW_DAYS,
+                workflow=WEEKLY_SPLIT_WORKFLOW,
+                branch="8.0",
+            ),
             releases_strip=render_release_strip(rows),
         )
         assert idx.count('class="rel-strip"') == 1
@@ -290,7 +295,12 @@ class TestReleaseStrip:
 
         cache = _seed(temp_db_path)
         idx = render_html(
-            generate_report_data(cache, days=SEED_WINDOW_DAYS, workflow=WEEKLY_SPLIT_WORKFLOW, branch="8.0")
+            generate_report_data(
+                cache,
+                days=SEED_WINDOW_DAYS,
+                workflow=WEEKLY_SPLIT_WORKFLOW,
+                branch="8.0",
+            )
         )
         assert 'class="rel-strip"' not in idx
 
@@ -339,7 +349,9 @@ class TestFailureDeepLinks:
         from valkey_oncall.report import generate_report_data
 
         cache = _seed(temp_db_path)
-        data = generate_report_data(cache, days=SEED_WINDOW_DAYS, workflow=WEEKLY_SPLIT_WORKFLOW, branch="9.0")
+        data = generate_report_data(
+            cache, days=SEED_WINDOW_DAYS, workflow=WEEKLY_SPLIT_WORKFLOW, branch="9.0"
+        )
         for info in data["tests"].values():
             for entry in info["timeline"].values():
                 if entry is not None:
@@ -453,7 +465,12 @@ class TestRenderReleasesHtml:
 
         cache = _seed(temp_db_path)
         idx = render_html(
-            generate_report_data(cache, days=SEED_WINDOW_DAYS, workflow=WEEKLY_SPLIT_WORKFLOW, branch="8.0")
+            generate_report_data(
+                cache,
+                days=SEED_WINDOW_DAYS,
+                workflow=WEEKLY_SPLIT_WORKFLOW,
+                branch="8.0",
+            )
         )
         assert idx.count('href="releases.html"') == 1
         assert "Release branch health" in idx
