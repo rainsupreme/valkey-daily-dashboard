@@ -17,7 +17,9 @@ from valkey_oncall.flakes import (
     RegistryError,
     entry_report,
     maintenance,
+    refresh_registry,
     signature_id,
+    tracking_for_test,
 )
 
 TEST = "Active defrag - AOF loading in tests/unit/memefficiency.tcl"
@@ -308,3 +310,286 @@ class TestCli:
             ],
         )
         assert r.exit_code == 1 and "pick one with --test" in r.output
+
+
+# ----------------------------------------------------------------------
+# refresh: issue / fix-PR state from GitHub
+# ----------------------------------------------------------------------
+
+
+class _FakeGitHub:
+    """Stand-in for GitHubActionsClient's issue/PR reads."""
+
+    def __init__(self, issues=None, pulls=None, timelines=None) -> None:
+        self.issues = issues or {}
+        self.pulls = pulls or {}
+        self.timelines = timelines or {}
+        self.calls: list = []
+
+    def get_issue(self, number):
+        self.calls.append(("issue", number))
+        return self.issues[number]
+
+    def get_pull(self, number):
+        self.calls.append(("pull", number))
+        return self.pulls[number]
+
+    def get_issue_timeline(self, number):
+        self.calls.append(("timeline", number))
+        return self.timelines.get(number, [])
+
+
+def _issue(state, title="t", reason=None):
+    return {"state": state, "title": title, "state_reason": reason}
+
+
+class TestRefresh:
+    def test_open_issue_caches_state_only(self) -> None:
+        reg = FlakeRegistry([FlakeEntry(test_name=TEST, issue=1)])
+        gh = _FakeGitHub(issues={1: _issue("open", "flaky defrag")})
+        reports = refresh_registry(reg, gh)
+        e = reg.entries()[0]
+        assert e.issue_state == "open" and e.issue_title == "flaky defrag"
+        assert e.status == "tracked" and e.fix_sha is None
+        assert reports[0]["changes"] == ["issue_state None -> open"]
+        assert ("timeline", 1) not in gh.calls
+
+    def test_issue_closed_by_merged_pr_records_fix(self) -> None:
+        # Real shape (valkey issue 4958): the closed event carries no commit;
+        # the fix is the merged PR cross-referenced just before the close.
+        reg = FlakeRegistry([FlakeEntry(test_name=TEST, issue=1)])
+        timeline = [
+            {
+                "event": "cross-referenced",
+                "source": {
+                    "issue": {
+                        "number": 2,
+                        "pull_request": {"merged_at": "2026-10-20T10:00:00Z"},
+                    }
+                },
+            },
+            {
+                "event": "closed",
+                "commit_id": None,
+                "created_at": "2026-10-20T10:00:05Z",
+            },
+        ]
+        gh = _FakeGitHub(
+            issues={1: _issue("closed")},
+            timelines={1: timeline},
+            pulls={
+                2: {
+                    "state": "closed",
+                    "merged_at": "2026-10-20T10:00:00Z",
+                    "merge_commit_sha": "abcdef1234567890",
+                }
+            },
+        )
+        refresh_registry(reg, gh)
+        e = reg.entries()[0]
+        assert e.status == "fixed"
+        assert (e.fix_sha, e.fix_merged_at, e.fix_pr) == (
+            "abcdef1234567890",
+            "2026-10-20",
+            2,
+        )
+
+    def test_closed_event_with_commit_needs_no_pr_fetch(self) -> None:
+        reg = FlakeRegistry([FlakeEntry(test_name=TEST, issue=1)])
+        timeline = [
+            {
+                "event": "closed",
+                "commit_id": "c0ffee",
+                "created_at": "2026-10-20T10:00Z",
+            }
+        ]
+        gh = _FakeGitHub(issues={1: _issue("closed")}, timelines={1: timeline})
+        refresh_registry(reg, gh)
+        e = reg.entries()[0]
+        assert (e.fix_sha, e.fix_merged_at, e.fix_pr) == ("c0ffee", "2026-10-20", None)
+        assert not any(c[0] == "pull" for c in gh.calls)
+
+    def test_issue_closed_by_hand_is_flagged_not_fixed(self) -> None:
+        reg = FlakeRegistry([FlakeEntry(test_name=TEST, issue=1)])
+        timeline = [{"event": "closed", "commit_id": None, "created_at": "2026-10-20"}]
+        gh = _FakeGitHub(
+            issues={1: _issue("closed", reason="not_planned")}, timelines={1: timeline}
+        )
+        reports = refresh_registry(reg, gh)
+        e = reg.entries()[0]
+        assert e.status == "closed" and e.fix_sha is None
+        assert reports[0]["flag"] == "closed_without_fix"
+
+    def test_registered_fix_pr_merging_marks_fixed(self) -> None:
+        reg = FlakeRegistry([FlakeEntry(test_name=TEST, fix_pr=7)])
+        gh = _FakeGitHub(
+            pulls={
+                7: {
+                    "state": "closed",
+                    "merged_at": "2026-10-21T00:00:00Z",
+                    "merge_commit_sha": "feedface00",
+                }
+            }
+        )
+        reports = refresh_registry(reg, gh)
+        e = reg.entries()[0]
+        assert e.status == "fixed" and e.fix_merged_at == "2026-10-21"
+        assert reports[0]["fix_pr_state"] == "merged"
+
+    def test_fix_pr_closed_unmerged_is_flagged(self) -> None:
+        reg = FlakeRegistry([FlakeEntry(test_name=TEST, fix_pr=7)])
+        gh = _FakeGitHub(pulls={7: {"state": "closed", "merged_at": None}})
+        reports = refresh_registry(reg, gh)
+        assert reports[0]["flag"] == "fix_pr_closed_unmerged"
+        assert reg.entries()[0].status == "tracked"
+
+    def test_already_fixed_entry_skips_lookups(self) -> None:
+        reg = FlakeRegistry(
+            [
+                FlakeEntry(
+                    test_name=TEST,
+                    issue=1,
+                    fix_pr=7,
+                    fix_sha="abc",
+                    fix_merged_at="2026-10-01",
+                )
+            ]
+        )
+        gh = _FakeGitHub(issues={1: _issue("closed")})
+        refresh_registry(reg, gh)
+        assert gh.calls == [("issue", 1)]
+
+    def test_closed_without_fix_in_maintenance(self, temp_db_path) -> None:
+        cache = Cache(temp_db_path)
+        _seed(cache, 1, _today(1), [(TEST, SUMMARY_A)])
+        e = FlakeEntry(test_name=TEST, issue=1, issue_state="closed")
+        findings = maintenance(cache, FlakeRegistry([e]))
+        assert [f["kind"] for f in findings] == ["closed_without_fix"]
+        assert "1 sighting(s)" in findings[0]["detail"]
+
+    def test_cached_fields_roundtrip(self, tmp_path) -> None:
+        path = str(tmp_path / "f.json")
+        reg = FlakeRegistry(
+            [FlakeEntry(test_name=TEST, issue=1, issue_state="open", issue_title="x")]
+        )
+        reg.save(path)
+        again = FlakeRegistry.load(path).entries()[0]
+        assert (again.issue_state, again.issue_title) == ("open", "x")
+
+
+# ----------------------------------------------------------------------
+# tracking_for_test: the report's 'tracked' column
+# ----------------------------------------------------------------------
+
+
+class TestTracking:
+    def test_confirmed_and_unconfirmed_modes(self) -> None:
+        reg = FlakeRegistry(
+            [
+                FlakeEntry(test_name=TEST, summary=SUMMARY_A, issue=1),
+                FlakeEntry(test_name=TEST, summary=SUMMARY_B, issue=2),
+                FlakeEntry(test_name="other", issue=3),
+            ]
+        )
+        rows = tracking_for_test(reg, TEST, {SUMMARY_A + "\nbanner"}, {"2026-10-20"})
+        assert [(r["issue"], r["confirmed"]) for r in rows] == [(1, True), (2, False)]
+
+    def test_recurred_only_after_fix_date(self) -> None:
+        fixed = FlakeEntry(
+            test_name=TEST, issue=1, fix_sha="abc", fix_merged_at="2026-10-15"
+        )
+        reg = FlakeRegistry([fixed])
+        assert not tracking_for_test(reg, TEST, set(), {"2026-10-10"})[0]["recurred"]
+        assert tracking_for_test(reg, TEST, set(), {"2026-10-16"})[0]["recurred"]
+
+    def test_report_renders_tracked_column(self, temp_db_path) -> None:
+        from valkey_oncall.report import generate_report_data, render_html
+
+        cache = Cache(temp_db_path)
+        _seed(cache, 1, _today(1), [(TEST, SUMMARY_A), ("lonely test", "x")])
+        reg = FlakeRegistry(
+            [
+                FlakeEntry(test_name=TEST, issue=4001, issue_state="open"),
+            ]
+        )
+        data = generate_report_data(cache, days=14, registry=reg)
+        assert data["tests"][TEST]["tracking"][0]["issue"] == 4001
+        assert data["tests"]["lonely test"]["tracking"] == []
+
+        page = render_html(data)
+        assert '<th class="flake-col"' in page
+        assert "https://github.com/valkey-io/valkey/issues/4001" in page
+        assert 'class="flake-link"' in page
+        assert 'class="flake-link flake-recurred"' not in page
+        # Row for the untracked test carries an empty tracked cell.
+        pos = page.index("lonely test")
+        row = page[page.rindex("<tr", 0, pos) : page.index("</tr>", pos)]
+        assert 'title="no registry entry"' in row
+
+    def test_report_marks_recurrence_red(self, temp_db_path) -> None:
+        from valkey_oncall.report import generate_report_data, render_html
+
+        cache = Cache(temp_db_path)
+        _seed(cache, 1, _today(1), [(TEST, SUMMARY_A)])
+        reg = FlakeRegistry(
+            [
+                FlakeEntry(
+                    test_name=TEST,
+                    issue=4001,
+                    fix_pr=4002,
+                    fix_sha="abc",
+                    fix_merged_at=_today(10),
+                )
+            ]
+        )
+        page = render_html(generate_report_data(cache, days=14, registry=reg))
+        assert 'class="flake-link flake-recurred"' in page and "RECURRED" in page
+
+    def test_report_without_registry_has_empty_column(self, temp_db_path) -> None:
+        from valkey_oncall.report import generate_report_data, render_html
+
+        cache = Cache(temp_db_path)
+        _seed(cache, 1, _today(1), [(TEST, SUMMARY_A)])
+        page = render_html(generate_report_data(cache, days=14))
+        assert '<th class="flake-col"' in page
+        assert '<a class="flake-link' not in page
+
+
+class TestRefreshCli:
+    def test_refresh_writes_unless_dry_run(self, temp_db_path, tmp_path, monkeypatch):
+        from valkey_oncall import cli as cli_mod
+
+        reg_path = str(tmp_path / "flakes.json")
+        FlakeRegistry([FlakeEntry(test_name=TEST, issue=1)]).save(reg_path)
+        monkeypatch.setenv("GITHUB_TOKEN", "x")
+        monkeypatch.setattr(
+            cli_mod,
+            "_make_client",
+            lambda repo: _FakeGitHub(issues={1: _issue("open", "title")}),
+        )
+        runner = CliRunner()
+        r = runner.invoke(
+            cli,
+            [
+                "--db",
+                temp_db_path,
+                "flakes",
+                "--registry",
+                reg_path,
+                "refresh",
+                "--dry-run",
+            ],
+            catch_exceptions=False,
+        )
+        assert r.exit_code == 0, r.output
+        assert "dry run" in r.output
+        assert "issue_state" not in open(reg_path).read()
+
+        r = runner.invoke(
+            cli,
+            ["--db", temp_db_path, "flakes", "--registry", reg_path, "refresh"],
+            catch_exceptions=False,
+        )
+        assert r.exit_code == 0, r.output
+        saved = json.load(open(reg_path))["entries"][0]
+        assert saved["issue_state"] == "open" and saved["issue_title"] == "title"

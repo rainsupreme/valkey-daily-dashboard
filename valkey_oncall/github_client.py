@@ -196,3 +196,53 @@ class GitHubActionsClient:
             "message_full": message,
             "author": (commit.get("author", {}) or {}).get("name", ""),
         }
+
+    # ------------------------------------------------------------------
+    # Issues and pull requests (used by the flake registry refresh)
+    # ------------------------------------------------------------------
+
+    def get_issue(self, number: int) -> Dict:
+        """Fetch an issue (or PR, which GitHub also serves here) compactly."""
+        resp = self._get(f"/repos/{self.repo}/issues/{number}")
+        self._raise_for_status(resp)
+        data = resp.json()
+        return {
+            "number": data.get("number", number),
+            "state": data.get("state"),
+            "state_reason": data.get("state_reason"),
+            "title": data.get("title", ""),
+            "closed_at": data.get("closed_at"),
+            "is_pr": "pull_request" in data,
+            "html_url": data.get("html_url", ""),
+        }
+
+    def get_pull(self, number: int) -> Dict:
+        """Fetch a pull request's merge state compactly."""
+        resp = self._get(f"/repos/{self.repo}/pulls/{number}")
+        self._raise_for_status(resp)
+        data = resp.json()
+        return {
+            "number": data.get("number", number),
+            "state": data.get("state"),
+            "title": data.get("title", ""),
+            "merged_at": data.get("merged_at"),
+            "merge_commit_sha": data.get("merge_commit_sha"),
+            "html_url": data.get("html_url", ""),
+        }
+
+    def get_issue_timeline(self, number: int) -> List[Dict]:
+        """Fetch an issue's timeline events (``closed``, ``cross-referenced``, ...)."""
+        events: List[Dict] = []
+        page = 1
+        while True:
+            resp = self._get(
+                f"/repos/{self.repo}/issues/{number}/timeline",
+                params={"page": page, "per_page": 100},
+            )
+            self._raise_for_status(resp)
+            batch = resp.json()
+            events.extend(batch)
+            if len(batch) < 100:
+                break
+            page += 1
+        return events

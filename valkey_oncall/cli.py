@@ -18,6 +18,7 @@ from valkey_oncall.flakes import (
     RegistryError,
     entry_report,
     maintenance,
+    refresh_registry,
 )
 from valkey_oncall.github_client import (
     DEFAULT_REPO,
@@ -513,6 +514,41 @@ def flakes_check(ctx: click.Context, days: int) -> None:
     click.echo(json.dumps(maintenance(cache, reg, days), indent=2))
 
 
+@flakes.command("refresh")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Report what would change without writing the registry.",
+)
+@click.pass_context
+def flakes_refresh(ctx: click.Context, dry_run: bool) -> None:
+    """Read issue and fix-PR state from GitHub into the registry.
+
+    Caches each entry's issue state and title, and records the fix when the
+    issue was closed by a merged PR (or the registered fix PR merged). An
+    issue closed with no fix commit is flagged, not silently dropped.
+    """
+    _require_token()
+    reg = _load_registry(ctx)
+    client = _make_client(ctx.obj["repo"])
+    try:
+        reports = refresh_registry(reg, client)
+    except GitHubAPIError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    if not dry_run:
+        reg.save(ctx.obj["registry"])
+    changed = sum(1 for r in reports if r["changes"])
+    flagged = sum(1 for r in reports if r.get("flag"))
+    click.echo(json.dumps(reports, indent=2))
+    click.echo(
+        f"{len(reports)} entries refreshed, {changed} changed, {flagged} flagged"
+        + (" (dry run, registry not written)" if dry_run else ""),
+        err=True,
+    )
+
+
 # ------------------------------------------------------------------
 # sync
 # ------------------------------------------------------------------
@@ -833,6 +869,12 @@ def blame(
     default=False,
     help="Also render the CI (per-commit) workflow stacked above Daily (HTML only).",
 )
+@click.option(
+    "--registry",
+    default=DEFAULT_REGISTRY_PATH,
+    show_default=True,
+    help="Flake registry to populate the 'tracked' column from (missing file = empty).",
+)
 @click.pass_context
 def report(
     ctx: click.Context,
@@ -843,6 +885,7 @@ def report(
     output: str,
     no_sync: bool,
     with_ci: bool,
+    registry: str,
 ) -> None:
     """Generate a failure trend report, syncing latest data first."""
     from valkey_oncall.report import (
@@ -902,6 +945,11 @@ def report(
         f"Generating report for {repo} {workflow} / {branch} (last {days} days)...",
         err=True,
     )
+    try:
+        flake_registry = FlakeRegistry.load(registry)
+    except RegistryError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
     data = generate_report_data(
         cache,
         days=days,
@@ -909,6 +957,7 @@ def report(
         workflow=workflow_file,
         repo=repo,
         client=client,
+        registry=flake_registry,
     )
 
     renderers = {
@@ -929,6 +978,7 @@ def report(
                 client=client,
                 per_run=True,
                 max_runs=40,
+                registry=flake_registry,
             )
         content = render_html(
             data, ci_data=ci_data, releases_strip=_release_strip(cache, repo)

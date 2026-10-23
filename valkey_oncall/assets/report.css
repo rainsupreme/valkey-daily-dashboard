@@ -69,6 +69,16 @@ pre { background: #161b22; padding: 12px; border-radius: 6px; overflow-x: auto;
 /* Heatmap trend column: fixed footprint so date cells keep their grid */
 .spark-col { min-width: 100px; font-size: 0.6875rem; }
 .heatmap-scroll .spark-cell { width: 100px; min-width: 100px; max-width: 100px; padding: 3px 6px; }
+/* Heatmap tracked column: issue/PR owning a flake. Colour = state only. */
+.flake-col { min-width: 64px; font-size: 0.6875rem; }
+.heatmap-scroll .flake-cell { width: 64px; min-width: 64px; max-width: 64px; padding: 3px 6px;
+  font-size: 0.6875rem; text-align: left; white-space: nowrap; }
+.flake-link { color: #58a6ff; text-decoration: none; }
+.flake-link:hover { text-decoration: underline; }
+.flake-link.flake-fixed { color: #8b949e; }
+.flake-link.flake-closed { color: #d29922; }
+.flake-link.flake-recurred, .flake-cell.flake-recurred { color: #f85149; font-weight: 700; }
+.flake-link.flake-unconfirmed { opacity: 0.7; }
 .stale-row { opacity: 0.45; }
 .resolved-block { margin-top: 18px; }
 .resolved-block summary { color: #8b949e; font-size: 0.75rem; margin-bottom: 8px; }

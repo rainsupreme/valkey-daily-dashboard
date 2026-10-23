@@ -13,6 +13,7 @@ from typing import Dict, List
 
 from valkey_oncall.blame import REGRESSION_ONGOING_QUIET_RUNS, compute_blame
 from valkey_oncall.cache import Cache
+from valkey_oncall.flakes import tracking_for_test
 from valkey_oncall.log_parser import sanitize_cached_failure
 from valkey_oncall.scorecard import (
     COOLING_QUIET_RUNS,
@@ -123,11 +124,17 @@ def generate_report_data(
     client=None,
     per_run: bool = False,
     max_runs: int = 50,
+    registry=None,
 ) -> Dict:
     """Build the data structure for the failure trend report.
 
     If *client* (a ``GitHubActionsClient``) is provided, the report will
     include the list of commits between consecutive runs.
+
+    If *registry* (a ``FlakeRegistry``) is provided, each test carries a
+    ``tracking`` list: the registry entries for that test, with whether the
+    failure mode was confirmed against this window's error summaries and
+    whether a fixed entry recurred after its fix merged.
 
     With ``per_run=True`` (CI mode), every completed run is its own column and
     the window is the last ``max_runs`` runs. Otherwise (Daily mode) runs are
@@ -149,6 +156,10 @@ def generate_report_data(
     run_details: List[Dict] = []
     # test_name -> [{run_date, status, error_summary, job_names}]
     test_timeline: Dict[str, Dict[str, Dict]] = defaultdict(dict)
+    # Full (untruncated) error summaries and failure days per test, for
+    # matching against the flake registry.
+    test_errors: Dict[str, set] = defaultdict(set)
+    test_fail_days: Dict[str, set] = defaultdict(set)
 
     for run in runs:
         rid = run["run_id"]
@@ -200,6 +211,9 @@ def generate_report_data(
             error_summaries = sorted(
                 set(inst["error_summary"][:120] for inst in instances)
             )
+            for inst in instances:
+                test_errors[test_name].add(inst["error_summary"])
+            test_fail_days[test_name].add(run_info["day"])
             job_names = sorted(set(inst["job_name"] for inst in instances))
             job_urls = [
                 job_log_url(repo, rid, jid)
@@ -319,6 +333,13 @@ def generate_report_data(
                     len(lt_test_days.get(name, set())) / lt_total * 100, 1
                 ),
                 "timeline": {d: test_timeline[name].get(d) for d in dates},
+                "tracking": (
+                    tracking_for_test(
+                        registry, name, test_errors[name], test_fail_days[name]
+                    )
+                    if registry is not None
+                    else []
+                ),
             }
             for name in sorted_tests
         },
@@ -436,6 +457,59 @@ def _render_heatmap_table(data: Dict) -> str:
         )
 
     test_rows = ""
+    repo = data.get("summary", {}).get("repo", "valkey-io/valkey")
+
+    def _tracking_cell(tracking: List[Dict]) -> str:
+        """One <td> linking the test to the issue/PR tracking it.
+
+        Colour carries state only: a recurrence after a merged fix is the
+        one abnormal case and is red; an issue closed with no fix recorded
+        is amber (needs a registry decision); everything else is plain.
+        An unmatched failure-mode entry is shown but marked unconfirmed.
+        """
+        if not tracking:
+            return '<td class="flake-cell" title="no registry entry"></td>'
+        parts: List[str] = []
+        for t in tracking:
+            if t["issue"] is not None:
+                label = f"#{t['issue']}"
+                href = f"https://github.com/{repo}/issues/{t['issue']}"
+            else:
+                label = f"PR {t['fix_pr']}"
+                href = f"https://github.com/{repo}/pull/{t['fix_pr']}"
+            tips = []
+            if t.get("issue_title"):
+                tips.append(t["issue_title"])
+            cls = "flake-link"
+            if t["recurred"]:
+                cls += " flake-recurred"
+                tips.append(
+                    f"RECURRED: fix merged {t['fix_merged_at']} "
+                    f"({(t['fix_sha'] or '')[:8]}) but the test failed after it"
+                )
+            elif t["status"] == "fixed":
+                cls += " flake-fixed"
+                tips.append(
+                    f"fix merged {t['fix_merged_at']}"
+                    + (f" in PR {t['fix_pr']}" if t["fix_pr"] else "")
+                )
+            elif t["status"] == "closed":
+                cls += " flake-closed"
+                tips.append("issue closed, no fix recorded in the registry")
+            else:
+                tips.append(f"issue {t.get('issue_state') or 'state unknown'}")
+            if not t["confirmed"]:
+                cls += " flake-unconfirmed"
+                tips.append(
+                    "registered failure mode not seen in this window (test-only match)"
+                )
+            tip = html.escape(" · ".join(tips))
+            suffix = "" if t["confirmed"] else "?"
+            parts.append(
+                f'<a class="{cls}" href="{href}" target="_blank" '
+                f'rel="noopener noreferrer" title="{tip}">{label}{suffix}</a>'
+            )
+        return f'<td class="flake-cell">{" ".join(parts)}</td>'
 
     def _test_row(test_name: str, info: Dict, row_attrs: str = "") -> str:
         """Render one test's <tr>. *row_attrs* is injected into the tag."""
@@ -475,6 +549,7 @@ def _render_heatmap_table(data: Dict) -> str:
             warn_marker = f'<a class="regwarn" href="#regressions" title="{wtip}">⚠️</a>'
         return f"""<tr{row_attrs}>
             <td class="test-name" title="{html.escape(test_name)}">{warn_marker}{html.escape(short_name)}</td>
+            {_tracking_cell(info.get("tracking", []))}
             {_trend_cell(series, sc)}
             {cells}
         </tr>"""
@@ -532,8 +607,25 @@ def _render_heatmap_table(data: Dict) -> str:
         preview = ", ".join(_short_test_name(m) for m in members[:3])
         if n > 3:
             preview += f", … +{n - 3} more"
+        tracked = sum(1 for m in members if tests[m].get("tracking"))
+        recurred = sum(
+            1
+            for m in members
+            if any(t["recurred"] for t in tests[m].get("tracking", []))
+        )
+        if tracked:
+            tcls = "flake-cell" + (" flake-recurred" if recurred else "")
+            ttip = f"{tracked} of {n} tests have a registry entry"
+            if recurred:
+                ttip += f"; {recurred} recurred after a merged fix"
+            track_cell = (
+                f'<td class="{tcls}" title="{html.escape(ttip)}">{tracked}/{n}</td>'
+            )
+        else:
+            track_cell = '<td class="flake-cell" title="no registry entries"></td>'
         return f"""<tr class="hm-cluster-toggle" data-group="{gid}" title="{html.escape(preview)}">
             <td class="test-name"><span class="hm-caret">▸</span> {warn_marker}{n} tests · identical failure days</td>
+            {track_cell}
             {_trend_cell(env, None, prefix=f"cluster envelope ({freq_pct}% of shown {unit}) · ")}
             {cells}
         </tr>"""
@@ -585,11 +677,16 @@ def _render_heatmap_table(data: Dict) -> str:
     scroll_cls = "heatmap-scroll scroll-right" if per_run else "heatmap-scroll"
     wrap_open = '<div class="heatmap-scroll-wrap has-fade">' if per_run else ""
     wrap_close = "</div>" if per_run else ""
+    track_ttl = (
+        "Issue or PR tracking this failure in flakes.json. Red = recurred after "
+        "its fix merged; amber = issue closed with no fix recorded; ? = "
+        "registered failure mode not seen in this window."
+    )
     return f"""{wrap_open}<div class="{scroll_cls}"><table data-total-cols="{len(columns)}">
   {caption}
   <thead>
-    <tr><th class="test-name">Test</th><th class="spark-col" title="{trend_ttl}">{trend_hdr}</th>{date_headers}</tr>
-    <tr><td class="test-name" style="color:#8b949e">Run status</td><td></td>{run_status_cells}</tr>
+    <tr><th class="test-name">Test</th><th class="flake-col" title="{track_ttl}">tracked</th><th class="spark-col" title="{trend_ttl}">{trend_hdr}</th>{date_headers}</tr>
+    <tr><td class="test-name" style="color:#8b949e">Run status</td><td></td><td></td>{run_status_cells}</tr>
   </thead>
   <tbody>
     {test_rows}

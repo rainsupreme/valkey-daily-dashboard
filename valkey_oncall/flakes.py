@@ -29,6 +29,7 @@ DEFAULT_REGISTRY_PATH = "flakes.json"
 
 STATUS_TRACKED = "tracked"
 STATUS_FIXED = "fixed"
+STATUS_CLOSED = "closed"  # issue closed, no fix recorded: needs a human look
 
 TIER_EXACT = "exact"
 TIER_TEST_ONLY = "test_only"
@@ -85,6 +86,12 @@ class FlakeEntry:
     fix_merged_at: Optional[str] = None  # ISO date; a sighting after it is a recurrence
     added_at: str = ""
     note: str = ""
+    # Cached from GitHub by ``flakes refresh``; never authoritative, always
+    # overwritten by the next refresh. Lets the report render issue state
+    # without a network call.
+    issue_state: Optional[str] = None  # "open" | "closed"
+    issue_title: Optional[str] = None
+    refreshed_at: Optional[str] = None
     id: str = field(default="")
 
     def __post_init__(self) -> None:
@@ -107,7 +114,11 @@ class FlakeEntry:
 
     @property
     def status(self) -> str:
-        return STATUS_FIXED if self.fix_sha else STATUS_TRACKED
+        if self.fix_sha:
+            return STATUS_FIXED
+        if self.issue_state == "closed":
+            return STATUS_CLOSED
+        return STATUS_TRACKED
 
     def to_dict(self) -> Dict:
         d = asdict(self)
@@ -241,6 +252,165 @@ class FlakeRegistry:
         return out
 
 
+def tracking_for_test(
+    registry: FlakeRegistry,
+    test_name: str,
+    error_summaries,
+    failure_days,
+) -> List[Dict]:
+    """Registry entries for one report row, with how they relate to this window.
+
+    *error_summaries* are the full summaries seen for the test in the window;
+    an entry with a summary is ``confirmed`` only if one of them normalizes
+    to it. *failure_days* (``YYYY-MM-DD``) decide ``recurred``: a fixed entry
+    whose test failed after the fix merged. Entries are listed exact-first so
+    a renderer can show the first as the primary owner.
+    """
+    normalized = {normalize_summary(s) for s in error_summaries}
+    last_day = max(failure_days) if failure_days else None
+    out: List[Dict] = []
+    for e in registry.entries():
+        if e.test_name != test_name:
+            continue
+        confirmed = e.summary is None or e.summary in normalized
+        recurred = bool(
+            e.fix_merged_at and last_day and last_day > e.fix_merged_at[:10]
+        )
+        out.append(
+            {
+                "id": e.id,
+                "issue": e.issue,
+                "issue_state": e.issue_state,
+                "issue_title": e.issue_title,
+                "fix_pr": e.fix_pr,
+                "fix_sha": e.fix_sha,
+                "fix_merged_at": e.fix_merged_at,
+                "status": e.status,
+                "confirmed": confirmed,
+                "recurred": recurred,
+            }
+        )
+    out.sort(key=lambda t: (not t["confirmed"], t["id"]))
+    return out
+
+
+# ----------------------------------------------------------------------
+# Refresh from GitHub (issue state, fix PR merge state)
+# ----------------------------------------------------------------------
+
+
+def _fix_from_timeline(events: List[Dict]) -> Dict:
+    """Pull the fixing PR and merge commit out of an issue's timeline.
+
+    Two shapes occur. A ``Fixes #N`` merge sometimes leaves a ``closed``
+    event carrying the merge ``commit_id``. More often the ``closed`` event
+    has no commit and the fix is the ``cross-referenced`` merged pull request
+    whose merge is the latest one at or before the close. An issue closed by
+    hand with no merged PR referencing it yields neither.
+    """
+    out: Dict = {}
+    merged: List[tuple] = []  # (merged_at, pr_number)
+    for ev in events:
+        kind = ev.get("event")
+        if kind == "closed":
+            out["closed_at"] = (ev.get("created_at") or "")[:10]
+            if ev.get("commit_id"):
+                out["fix_sha"] = ev["commit_id"]
+        elif kind == "cross-referenced":
+            src = (ev.get("source") or {}).get("issue") or {}
+            pr = src.get("pull_request")
+            if pr and pr.get("merged_at") and src.get("number"):
+                merged.append((pr["merged_at"], src["number"]))
+    if merged:
+        closed_at = out.get("closed_at") or "9999"
+        # Latest merge at or before the close (merge and auto-close land
+        # seconds apart, so compare on the date).
+        before = [m for m in merged if m[0][:10] <= closed_at] or merged
+        merged_at, number = max(before)
+        out["fix_pr"] = number
+        out["fix_merged_at"] = merged_at[:10]
+    return out
+
+
+def refresh_entry(entry: FlakeEntry, client) -> Dict:
+    """Update one entry's cached GitHub state and record a merged fix.
+
+    *client* needs ``get_issue``, ``get_pull`` and ``get_issue_timeline``.
+    Returns a report dict describing what was read and what changed. The
+    entry is mutated; the caller saves the registry.
+    """
+    report: Dict = {"id": entry.id, "test_name": entry.test_name, "changes": []}
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    if entry.issue is not None:
+        issue = client.get_issue(entry.issue)
+        state = issue.get("state")
+        if state != entry.issue_state:
+            report["changes"].append(f"issue_state {entry.issue_state} -> {state}")
+        entry.issue_state = state
+        entry.issue_title = issue.get("title")
+        report["issue_state"] = state
+        if state == "closed" and not entry.fix_sha:
+            found = _fix_from_timeline(client.get_issue_timeline(entry.issue))
+            inferred = bool(found.get("fix_pr")) and not found.get("fix_sha")
+            if inferred:
+                pr = client.get_pull(found["fix_pr"])
+                if pr.get("merged_at"):
+                    found["fix_sha"] = pr.get("merge_commit_sha")
+                    found["fix_merged_at"] = pr["merged_at"][:10]
+            if found.get("fix_sha"):
+                entry.fix_sha = found["fix_sha"]
+                entry.fix_merged_at = found.get("fix_merged_at") or found["closed_at"]
+                if entry.fix_pr is None and found.get("fix_pr"):
+                    entry.fix_pr = found["fix_pr"]
+                how = "closed by commit"
+                if inferred:
+                    # The close event carried no commit; the PR is the merged
+                    # cross-reference nearest the close. Say so where a human
+                    # reading flakes.json will see it.
+                    how = "inferred from cross-reference"
+                    report["fix_source"] = "cross_reference"
+                    if not entry.note:
+                        entry.note = (
+                            f"fix PR {entry.fix_pr} inferred by refresh: merged "
+                            f"cross-reference nearest the issue close on "
+                            f"{found.get('closed_at') or '?'}"
+                        )
+                else:
+                    report["fix_source"] = "closed_commit"
+                report["changes"].append(
+                    f"fixed by {entry.fix_sha[:10]} on {entry.fix_merged_at}"
+                    + (f" (PR {entry.fix_pr})" if entry.fix_pr else "")
+                    + f" [{how}]"
+                )
+            else:
+                report["flag"] = "closed_without_fix"
+
+    if entry.fix_pr is not None and not entry.fix_sha:
+        pr = client.get_pull(entry.fix_pr)
+        report["fix_pr_state"] = (
+            "merged" if pr.get("merged_at") else pr.get("state", "unknown")
+        )
+        if pr.get("merged_at"):
+            entry.fix_sha = pr.get("merge_commit_sha")
+            entry.fix_merged_at = pr["merged_at"][:10]
+            report["changes"].append(
+                f"fix PR {entry.fix_pr} merged {entry.fix_merged_at} "
+                f"as {entry.fix_sha[:10]}"
+            )
+        elif pr.get("state") == "closed":
+            report["flag"] = "fix_pr_closed_unmerged"
+
+    entry.refreshed_at = today
+    report["status"] = entry.status
+    return report
+
+
+def refresh_registry(registry: FlakeRegistry, client) -> List[Dict]:
+    """Refresh every entry; see :func:`refresh_entry`."""
+    return [refresh_entry(e, client) for e in registry.entries()]
+
+
 # ----------------------------------------------------------------------
 # Sightings and maintenance (cache-derived, never stored in the registry)
 # ----------------------------------------------------------------------
@@ -302,6 +472,8 @@ def maintenance(cache, registry: FlakeRegistry, days: int = 30) -> List[Dict]:
     """Entries that need a human look, derived from the data rather than a clock.
 
     - ``recurrence``: fixed, but sighted after ``fix_merged_at``.
+    - ``closed_without_fix``: the issue is closed (per the last refresh) but
+      no fix commit is recorded; either record the fix or drop the entry.
     - ``drift``: tracked with a summary, zero sightings in the window, while
       the same test fails under a different summary (pattern no longer fits).
     - ``quiet``: tracked, zero sightings in the window (issue may be closable).
@@ -321,6 +493,20 @@ def maintenance(cache, registry: FlakeRegistry, days: int = 30) -> List[Dict]:
                         "last_sighting": recur[0].day,
                     }
                 )
+            continue
+        if e.status == STATUS_CLOSED:
+            findings.append(
+                {
+                    "id": e.id,
+                    "test_name": e.test_name,
+                    "kind": "closed_without_fix",
+                    "detail": (
+                        f"issue {e.issue} closed, no fix recorded; "
+                        f"{len(seen)} sighting(s) in {days} days"
+                    ),
+                    "last_sighting": seen[0].day if seen else None,
+                }
+            )
             continue
         if seen:
             continue
