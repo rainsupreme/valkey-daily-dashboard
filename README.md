@@ -102,6 +102,34 @@ The report includes:
 - Commit message tooltips on hover
 - Failed job lists and error details on hover
 
+### Flake registry
+
+Known flaky failures tied to the issue or PR tracking them, in the git-tracked
+`flakes.json` (the SQLite cache is disposable; curated knowledge is not). Every
+entry needs an `--issue` or `--fix-pr`: a failure nobody owns is never a tracked
+flake. Sightings are derived from the cache, never stored.
+
+```bash
+# Register a failure mode from a cached failure row (copies the parser's
+# normalized error_summary, so producer and consumer match the same way)
+valkey-oncall flakes add --from-job 69448207219 --issue 4964
+
+# Or by hand; omit --summary to claim every failure mode of the test
+valkey-oncall flakes add --test "Active defrag - AOF loading in tests/unit/memefficiency.tcl" --issue 3954
+
+# Entries with sightings in the last 30 days
+valkey-oncall flakes list
+
+# Look up a failure: exact matches first, test_only means unconfirmed mode
+valkey-oncall flakes match --test "..." --summary "..."
+
+# Record the fix; later sightings on runs after this date are recurrences
+valkey-oncall flakes fixed sig:1a2b3c4d5e --sha abc123 --merged-at 2026-10-20 --pr 4601
+
+# Maintenance list: recurrence after fix, pattern drift, quiet entries
+valkey-oncall flakes check
+```
+
 ### Scorecards
 
 Per-test flakiness scorecards with trend analysis:
@@ -259,6 +287,7 @@ valkey_oncall/
   report.py         — HTML report generation
   scorecard.py      — per-test flakiness scorecards
   blame.py          — regression blame narrowing
+  flakes.py         — flake registry (flakes.json) and sightings
   cli.py            — click CLI entry point
 
 tests/
