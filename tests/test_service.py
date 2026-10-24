@@ -481,3 +481,87 @@ class TestSyncAuthFailure:
         summary = svc.sync(workflow="daily")
 
         assert summary["auth_failed"] is False
+
+
+# ---------------------------------------------------------------------------
+# Incremental listing and refresh of runs first seen in progress
+# ---------------------------------------------------------------------------
+
+
+class TestIncrementalListing:
+    def test_first_listing_is_unbounded_and_the_next_starts_near_the_newest_run(
+        self, temp_db_path: str
+    ) -> None:
+        from valkey_oncall.service import LISTING_MARGIN_DAYS
+
+        client = MagicMock(repo="valkey-io/valkey")
+        run = _api_run(2, conclusion="success")
+        run["run_started_at"] = run["created_at"] = "2026-01-15T08:00:00Z"
+        client.get_workflow_runs.return_value = [run]
+        svc = OnCallService(client, Cache(temp_db_path))
+        svc.sync(workflow="daily")
+        svc.sync(workflow="daily")
+        first, second = client.get_workflow_runs.call_args_list
+        assert first.kwargs["created_after"] is None
+        assert LISTING_MARGIN_DAYS == 3
+        assert second.kwargs["created_after"] == "2026-01-12T08:00:00Z"
+
+    def test_callers_window_wins_over_the_derived_one(self, temp_db_path: str) -> None:
+        client = MagicMock(repo="valkey-io/valkey")
+        client.get_workflow_runs.return_value = [_api_run(1, conclusion="success")]
+        svc = OnCallService(client, Cache(temp_db_path))
+        svc.sync(workflow="daily")
+        svc.sync(workflow="daily", since="2025-01-01T00:00:00Z")
+        assert (
+            client.get_workflow_runs.call_args_list[1].kwargs["created_after"]
+            == "2025-01-01T00:00:00Z"
+        )
+
+    def test_listing_since_reaches_back_to_an_unfinished_run(self) -> None:
+        from valkey_oncall.service import listing_since
+
+        cached = [
+            {"run_id": 1, "status": "in_progress", "run_date": "2025-11-01T00:00:00Z"},
+            {"run_id": 2, "status": "success", "run_date": "2026-01-15T08:00:00Z"},
+        ]
+        assert listing_since(cached) == "2025-11-01T00:00:00Z"
+        assert listing_since([cached[1]]) == "2026-01-12T08:00:00Z"
+        assert listing_since([]) is None
+
+    def test_run_seen_in_progress_is_refreshed_and_its_failures_ingested(
+        self, temp_db_path: str
+    ) -> None:
+        cache = Cache(temp_db_path)
+        client = MagicMock(repo="valkey-io/valkey")
+        running = _api_run(40)
+        running["conclusion"] = None
+        running["status"] = "in_progress"
+        client.get_workflow_runs.return_value = [running]
+        client.get_jobs_for_run.return_value = [_api_job(400, conclusion="failure")]
+        client.get_job_log.return_value = (
+            "[err]: some_test in tests/unit.tcl\nExpected OK but got ERR\n"
+        )
+        svc = OnCallService(client, cache)
+        first = svc.sync(workflow="daily")
+        assert first["new_runs_fetched"] == 1
+        client.get_jobs_for_run.assert_not_called()
+        assert cache.query_runs(workflow="daily.yml")[0]["status"] == "in_progress"
+
+        client.get_workflow_runs.return_value = [_api_run(40, conclusion="failure")]
+        second = svc.sync(workflow="daily")
+        assert second["new_runs_fetched"] == 0
+        assert second["runs_refreshed"] == 1
+        assert cache.query_runs(workflow="daily.yml")[0]["status"] == "failure"
+        client.get_jobs_for_run.assert_called_once_with(40)
+        assert second["new_failures_parsed"] >= 1
+
+    def test_finished_runs_are_not_rewritten(self, temp_db_path: str) -> None:
+        cache = Cache(temp_db_path)
+        client = MagicMock(repo="valkey-io/valkey")
+        client.get_workflow_runs.return_value = [_api_run(50, conclusion="success")]
+        svc = OnCallService(client, cache)
+        svc.sync(workflow="daily")
+        client.get_workflow_runs.return_value = [_api_run(50, conclusion="failure")]
+        summary = svc.sync(workflow="daily")
+        assert summary["runs_refreshed"] == 0
+        assert cache.query_runs(workflow="daily.yml")[0]["status"] == "success"

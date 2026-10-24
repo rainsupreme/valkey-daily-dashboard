@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, List, Optional
 
 from valkey_oncall.cache import Cache
@@ -38,6 +38,44 @@ _WORKFLOW_FILES = {
 _WORKFLOW_EVENTS = {
     "ci.yml": "push",
 }
+
+# A run listed before it finished carries one of these instead of a conclusion.
+# It is stored as seen and refreshed from a later listing.
+NON_FINAL_STATUSES = frozenset({"queued", "in_progress", "waiting", "pending", "requested", "unknown", ""})
+
+# A listing of a workflow the cache already knows starts this many days before
+# its newest cached run, so a run that started late or was listed late is still
+# caught, instead of starting from the first run GitHub ever recorded.
+LISTING_MARGIN_DAYS = 3
+
+
+def _parse_run_date(value: str) -> Optional[datetime]:
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+
+def listing_since(cached_runs: List[Dict]) -> Optional[str]:
+    """Where a listing of an already-known workflow should start, or None for all of it.
+
+    Starts ``LISTING_MARGIN_DAYS`` before the newest cached run, and no later
+    than the oldest run still without a conclusion, so that run is listed
+    again and refreshed however long ago it started.
+    """
+    dates = [r["run_date"] for r in cached_runs if r.get("run_date")]
+    if not dates:
+        return None
+    newest = _parse_run_date(max(dates))
+    if newest is None:
+        return None
+    start = newest - timedelta(days=LISTING_MARGIN_DAYS)
+    for run in cached_runs:
+        if run.get("status") in NON_FINAL_STATUSES:
+            pending = _parse_run_date(run.get("run_date", ""))
+            if pending is not None and pending < start:
+                start = pending
+    return start.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _compute_duration(run: Dict) -> Optional[int]:
@@ -289,6 +327,7 @@ class OnCallService:
 
         summary: Dict = {
             "new_runs_fetched": 0,
+            "runs_refreshed": 0,
             "new_jobs_fetched": 0,
             "new_logs_fetched": 0,
             "new_failures_parsed": 0,
@@ -309,28 +348,38 @@ class OnCallService:
             workflow_file = _WORKFLOW_FILES.get(wf, wf)
             _log(f"Fetching {wf} runs...")
 
-            # Snapshot cached run IDs before fetching so we can count new ones
             try:
-                existing_run_ids = {
-                    r["run_id"]
-                    for r in self._cache.query_runs(
-                        repo=self._client.repo, workflow=workflow_file
-                    )
+                cached = self._cache.query_runs(
+                    repo=self._client.repo, workflow=workflow_file, branch=branch
+                )
+                existing_run_ids = {r["run_id"] for r in cached}
+                unfinished = {
+                    r["run_id"] for r in cached if r["status"] in NON_FINAL_STATUSES
                 }
+                # The caller's window wins; otherwise list only what can be new
+                # or changed since the last sync.
+                window_start = since if since is not None else listing_since(cached)
                 api_runs = self._client.get_workflow_runs(
                     workflow_file=workflow_file,
                     branch=branch,
-                    created_after=since,
+                    created_after=window_start,
                     created_before=until,
                     event=_WORKFLOW_EVENTS.get(workflow_file),
                 )
-                new_runs: List[Dict] = []
-                for raw in api_runs:
-                    run = _map_run(raw, self._client.repo)
-                    if run["run_id"] not in existing_run_ids:
-                        new_runs.append(run)
+                listed = [_map_run(raw, self._client.repo) for raw in api_runs]
+                new_runs: List[Dict] = [
+                    run for run in listed if run["run_id"] not in existing_run_ids
+                ]
+                refreshed: List[Dict] = [
+                    run
+                    for run in listed
+                    if run["run_id"] in unfinished
+                    and run["status"] not in NON_FINAL_STATUSES
+                ]
                 if new_runs:
                     self._cache.store_runs(new_runs)
+                if refreshed:
+                    self._cache.update_runs(refreshed)
             except Exception as exc:
                 summary["errors"].append(f"fetch_runs({wf}): {exc}")
                 if (
@@ -342,10 +391,11 @@ class OnCallService:
                 _log(f"  Error fetching {wf} runs: {exc}")
                 continue
 
-            _log(f"  {len(new_runs)} new runs")
+            _log(f"  {len(new_runs)} new runs, {len(refreshed)} finished since last seen")
             summary["new_runs_fetched"] += len(new_runs)
+            summary["runs_refreshed"] += len(refreshed)
 
-            failed_runs = [r for r in new_runs if r["status"] == "failure"]
+            failed_runs = [r for r in new_runs + refreshed if r["status"] == "failure"]
             if failed_runs:
                 _log(f"  {len(failed_runs)} failed runs to process")
 
@@ -418,6 +468,8 @@ class OnCallService:
         self,
         budget: int = 300,
         progress: ProgressCallback = None,
+        *,
+        refresh_runs: bool = True,
     ) -> Dict:
         """Ingest weekly release-branch runs as per-branch synthetic series.
 
@@ -432,6 +484,9 @@ class OnCallService:
         invocations make monotonic progress through history and steady
         state costs only the newest run. Cached data (from prior passes
         or the generic sync) is reused at zero API cost.
+
+        ``refresh_runs=False`` skips listing the weekly runs again, for a
+        caller whose :meth:`sync` just did.
         """
 
         def _log(msg: str) -> None:
@@ -457,18 +512,19 @@ class OnCallService:
 
         # Refresh the weekly run list (scheduled runs only — PR-triggered
         # runs of the workflow file carry no release-branch fan-out).
-        try:
-            self.fetch_runs("weekly", branch="unstable")
-        except Exception as exc:
-            summary["errors"].append(f"fetch_runs(weekly): {exc}")
-            if (
-                isinstance(exc, GitHubAPIError)
-                and not isinstance(exc, RateLimitError)
-                and exc.status_code in (401, 403)
-            ):
-                summary["auth_failed"] = True
-            summary["budget_used"] = self._client.requests_made - start_requests
-            return summary
+        if refresh_runs:
+            try:
+                self.fetch_runs("weekly", branch="unstable")
+            except Exception as exc:
+                summary["errors"].append(f"fetch_runs(weekly): {exc}")
+                if (
+                    isinstance(exc, GitHubAPIError)
+                    and not isinstance(exc, RateLimitError)
+                    and exc.status_code in (401, 403)
+                ):
+                    summary["auth_failed"] = True
+                summary["budget_used"] = self._client.requests_made - start_requests
+                return summary
 
         weekly_runs = [
             r

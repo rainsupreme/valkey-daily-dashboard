@@ -43,10 +43,10 @@ jobs:
         run: |
           mkdir -p _site
           # Sync CI (post-merge runs on unstable) so the stacked CI view has
-          # data. Bounded to a recent window to keep the daily job fast; the
-          # cache persists across runs so this stays incremental.
-          valkey-oncall -v sync --workflow ci --branch unstable \
-            --since "$(date -u -d '60 days ago' +%Y-%m-%dT00:00:00Z)"
+          # data. The cache persists across runs, and a workflow the cache
+          # knows is listed from a few days before its newest run, so this
+          # costs one page a day.
+          valkey-oncall -v sync --workflow ci --branch unstable
           # Ingest weekly release-branch runs (budgeted + resumable: the
           # backfill spreads across daily runs; steady state is a few calls).
           # Budget 2500 ≈ the full remaining historical backlog in one run
