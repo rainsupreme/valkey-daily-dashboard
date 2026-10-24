@@ -13,6 +13,11 @@ from valkey_oncall.releases import (
 )
 from valkey_oncall.weekly import WEEKLY_SPLIT_WORKFLOW
 
+# The seed below uses fixed 2026-07 run dates. ``generate_report_data`` defaults
+# to a 30-day window ending today, so any test that reads runs through it must
+# pass a window wide enough to reach those dates or it silently sees no data.
+SEED_WINDOW_DAYS = 3650
+
 # ---------------------------------------------------------------------------
 # Fixture: a cache with two weeks of synthetic weekly-split data
 # ---------------------------------------------------------------------------
@@ -273,7 +278,12 @@ class TestReleaseStrip:
         cache = _seed(temp_db_path)
         rows = generate_releases_data(cache)["summary_rows"]
         idx = render_html(
-            generate_report_data(cache, workflow=WEEKLY_SPLIT_WORKFLOW, branch="8.0"),
+            generate_report_data(
+                cache,
+                days=SEED_WINDOW_DAYS,
+                workflow=WEEKLY_SPLIT_WORKFLOW,
+                branch="8.0",
+            ),
             releases_strip=render_release_strip(rows),
         )
         assert idx.count('class="rel-strip"') == 1
@@ -285,7 +295,12 @@ class TestReleaseStrip:
 
         cache = _seed(temp_db_path)
         idx = render_html(
-            generate_report_data(cache, workflow=WEEKLY_SPLIT_WORKFLOW, branch="8.0")
+            generate_report_data(
+                cache,
+                days=SEED_WINDOW_DAYS,
+                workflow=WEEKLY_SPLIT_WORKFLOW,
+                branch="8.0",
+            )
         )
         assert 'class="rel-strip"' not in idx
 
@@ -303,7 +318,11 @@ class TestFailureDeepLinks:
         from valkey_oncall.report import _render_heatmap_table, generate_report_data
 
         cache = _seed(temp_db_path)  # synthetic ids -> real runs 1,2
-        data = generate_report_data(cache, workflow=WEEKLY_SPLIT_WORKFLOW, branch="8.0")
+        # The seed uses fixed 2026-07 dates; widen the day window so the test
+        # does not expire once those dates fall outside the default 30 days.
+        data = generate_report_data(
+            cache, days=SEED_WINDOW_DAYS, workflow=WEEKLY_SPLIT_WORKFLOW, branch="8.0"
+        )
         table = _render_heatmap_table(data)
         # job 5 fails in synthetic run -200 -> real run id 2
         assert (
@@ -315,7 +334,9 @@ class TestFailureDeepLinks:
         from valkey_oncall.report import generate_report_data, render_html
 
         cache = _seed(temp_db_path)
-        data = generate_report_data(cache, workflow=WEEKLY_SPLIT_WORKFLOW, branch="8.0")
+        data = generate_report_data(
+            cache, days=SEED_WINDOW_DAYS, workflow=WEEKLY_SPLIT_WORKFLOW, branch="8.0"
+        )
         run = [r for r in data["runs"] if r["failed_jobs"]][0]
         assert run["failed_job_urls"], "run_info should carry job urls"
         page = render_html(data)
@@ -328,7 +349,9 @@ class TestFailureDeepLinks:
         from valkey_oncall.report import generate_report_data
 
         cache = _seed(temp_db_path)
-        data = generate_report_data(cache, workflow=WEEKLY_SPLIT_WORKFLOW, branch="9.0")
+        data = generate_report_data(
+            cache, days=SEED_WINDOW_DAYS, workflow=WEEKLY_SPLIT_WORKFLOW, branch="9.0"
+        )
         for info in data["tests"].values():
             for entry in info["timeline"].values():
                 if entry is not None:
@@ -442,7 +465,12 @@ class TestRenderReleasesHtml:
 
         cache = _seed(temp_db_path)
         idx = render_html(
-            generate_report_data(cache, workflow=WEEKLY_SPLIT_WORKFLOW, branch="8.0")
+            generate_report_data(
+                cache,
+                days=SEED_WINDOW_DAYS,
+                workflow=WEEKLY_SPLIT_WORKFLOW,
+                branch="8.0",
+            )
         )
         assert idx.count('href="releases.html"') == 1
         assert "Release branch health" in idx

@@ -11,6 +11,15 @@ from typing import Optional
 import click
 
 from valkey_oncall.cache import Cache
+from valkey_oncall.flakes import (
+    DEFAULT_REGISTRY_PATH,
+    FlakeEntry,
+    FlakeRegistry,
+    RegistryError,
+    entry_report,
+    maintenance,
+    refresh_registry,
+)
 from valkey_oncall.github_client import (
     DEFAULT_REPO,
     GitHubActionsClient,
@@ -336,6 +345,211 @@ def query_failures(
 
 
 # ------------------------------------------------------------------
+# flakes subgroup
+# ------------------------------------------------------------------
+
+
+@cli.group()
+@click.option(
+    "--registry",
+    default=DEFAULT_REGISTRY_PATH,
+    show_default=True,
+    help="Path to the git-tracked registry file.",
+)
+@click.pass_context
+def flakes(ctx: click.Context, registry: str) -> None:
+    """Known flaky failures tied to the issue or PR tracking them."""
+    ctx.obj["registry"] = registry
+
+
+def _load_registry(ctx: click.Context) -> FlakeRegistry:
+    try:
+        return FlakeRegistry.load(ctx.obj["registry"])
+    except RegistryError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+
+@flakes.command("list")
+@click.option("--days", default=30, type=int, show_default=True)
+@click.pass_context
+def flakes_list(ctx: click.Context, days: int) -> None:
+    """List entries with sightings derived from the cache."""
+    reg = _load_registry(ctx)
+    cache = _make_cache(ctx.obj["db"])
+    out = [entry_report(cache, e, days) for e in reg.entries()]
+    click.echo(json.dumps(out, indent=2))
+
+
+@flakes.command("add")
+@click.option("--test", "test_name", default=None, help="Exact parser test_name.")
+@click.option(
+    "--summary",
+    default=None,
+    help="Failure mode (parser error_summary). Omit to claim every mode.",
+)
+@click.option(
+    "--from-job",
+    default=None,
+    type=int,
+    help="Copy test_name and error_summary from this cached job's failure row.",
+)
+@click.option("--issue", default=None, type=int, help="Tracking issue number.")
+@click.option("--fix-pr", default=None, type=int, help="PR expected to fix it.")
+@click.option("--note", default="", help="Free-text note.")
+@click.pass_context
+def flakes_add(
+    ctx: click.Context,
+    test_name: Optional[str],
+    summary: Optional[str],
+    from_job: Optional[int],
+    issue: Optional[int],
+    fix_pr: Optional[int],
+    note: str,
+) -> None:
+    """Register a failure signature.
+
+    With --from-job the signature is copied from a cached failure row, so
+    the stored summary is the parser's own output rather than a hand-typed
+    pattern. Use --test alongside it when the job has several failures.
+    """
+    if from_job is not None:
+        cache = _make_cache(ctx.obj["db"])
+        rows = cache.query_failures(job_id=from_job)
+        if test_name is not None:
+            rows = [r for r in rows if r["test_name"] == test_name]
+        if not rows:
+            click.echo(f"Error: no cached failure for job {from_job}", err=True)
+            sys.exit(1)
+        if len(rows) > 1:
+            names = sorted({r["test_name"] for r in rows})
+            click.echo(
+                f"Error: job {from_job} has {len(rows)} failures; pick one with "
+                "--test:\n  " + "\n  ".join(names),
+                err=True,
+            )
+            sys.exit(1)
+        test_name = rows[0]["test_name"]
+        if summary is None:
+            summary = rows[0]["error_summary"]
+    if test_name is None:
+        click.echo("Error: --test or --from-job is required", err=True)
+        sys.exit(1)
+    reg = _load_registry(ctx)
+    try:
+        entry = reg.add(
+            FlakeEntry(
+                test_name=test_name,
+                summary=summary,
+                issue=issue,
+                fix_pr=fix_pr,
+                note=note,
+            )
+        )
+    except RegistryError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    reg.save(ctx.obj["registry"])
+    click.echo(json.dumps(entry.to_dict(), indent=2))
+
+
+@flakes.command("fixed")
+@click.argument("entry_id")
+@click.option("--sha", required=True, help="Merge commit of the fix.")
+@click.option("--merged-at", required=True, help="Merge date, YYYY-MM-DD.")
+@click.option("--pr", default=None, type=int, help="Fix PR, if not set at add.")
+@click.pass_context
+def flakes_fixed(
+    ctx: click.Context, entry_id: str, sha: str, merged_at: str, pr: Optional[int]
+) -> None:
+    """Record that an entry's fix merged. Later sightings become recurrences."""
+    reg = _load_registry(ctx)
+    try:
+        entry = reg.mark_fixed(
+            entry_id, fix_sha=sha, fix_merged_at=merged_at, fix_pr=pr
+        )
+    except RegistryError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    reg.save(ctx.obj["registry"])
+    click.echo(json.dumps(entry.to_dict(), indent=2))
+
+
+@flakes.command("remove")
+@click.argument("entry_id")
+@click.pass_context
+def flakes_remove(ctx: click.Context, entry_id: str) -> None:
+    """Delete an entry."""
+    reg = _load_registry(ctx)
+    try:
+        entry = reg.remove(entry_id)
+    except RegistryError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    reg.save(ctx.obj["registry"])
+    click.echo(json.dumps(entry.to_dict(), indent=2))
+
+
+@flakes.command("match")
+@click.option("--test", "test_name", required=True, help="Exact parser test_name.")
+@click.option("--summary", default=None, help="Failure mode to confirm against.")
+@click.pass_context
+def flakes_match(ctx: click.Context, test_name: str, summary: Optional[str]) -> None:
+    """Look up a failure. Exact matches first; test_only means unconfirmed."""
+    reg = _load_registry(ctx)
+    out = [
+        {"tier": m.tier, **m.entry.to_dict(), "status": m.entry.status}
+        for m in reg.match(test_name, summary)
+    ]
+    click.echo(json.dumps(out, indent=2))
+
+
+@flakes.command("check")
+@click.option("--days", default=30, type=int, show_default=True)
+@click.pass_context
+def flakes_check(ctx: click.Context, days: int) -> None:
+    """Maintenance list: recurrences after a fix, pattern drift, quiet entries."""
+    reg = _load_registry(ctx)
+    cache = _make_cache(ctx.obj["db"])
+    click.echo(json.dumps(maintenance(cache, reg, days), indent=2))
+
+
+@flakes.command("refresh")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Report what would change without writing the registry.",
+)
+@click.pass_context
+def flakes_refresh(ctx: click.Context, dry_run: bool) -> None:
+    """Read issue and fix-PR state from GitHub into the registry.
+
+    Caches each entry's issue state and title, and records the fix when the
+    issue was closed by a merged PR (or the registered fix PR merged). An
+    issue closed with no fix commit is flagged, not silently dropped.
+    """
+    _require_token()
+    reg = _load_registry(ctx)
+    client = _make_client(ctx.obj["repo"])
+    try:
+        reports = refresh_registry(reg, client)
+    except GitHubAPIError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    if not dry_run:
+        reg.save(ctx.obj["registry"])
+    changed = sum(1 for r in reports if r["changes"])
+    flagged = sum(1 for r in reports if r.get("flag"))
+    click.echo(json.dumps(reports, indent=2))
+    click.echo(
+        f"{len(reports)} entries refreshed, {changed} changed, {flagged} flagged"
+        + (" (dry run, registry not written)" if dry_run else ""),
+        err=True,
+    )
+
+
+# ------------------------------------------------------------------
 # sync
 # ------------------------------------------------------------------
 
@@ -655,6 +869,12 @@ def blame(
     default=False,
     help="Also render the CI (per-commit) workflow stacked above Daily (HTML only).",
 )
+@click.option(
+    "--registry",
+    default=DEFAULT_REGISTRY_PATH,
+    show_default=True,
+    help="Flake registry to populate the 'tracked' column from (missing file = empty).",
+)
 @click.pass_context
 def report(
     ctx: click.Context,
@@ -665,6 +885,7 @@ def report(
     output: str,
     no_sync: bool,
     with_ci: bool,
+    registry: str,
 ) -> None:
     """Generate a failure trend report, syncing latest data first."""
     from valkey_oncall.report import (
@@ -724,6 +945,11 @@ def report(
         f"Generating report for {repo} {workflow} / {branch} (last {days} days)...",
         err=True,
     )
+    try:
+        flake_registry = FlakeRegistry.load(registry)
+    except RegistryError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
     data = generate_report_data(
         cache,
         days=days,
@@ -731,6 +957,7 @@ def report(
         workflow=workflow_file,
         repo=repo,
         client=client,
+        registry=flake_registry,
     )
 
     renderers = {
@@ -751,6 +978,7 @@ def report(
                 client=client,
                 per_run=True,
                 max_runs=40,
+                registry=flake_registry,
             )
         content = render_html(
             data, ci_data=ci_data, releases_strip=_release_strip(cache, repo)

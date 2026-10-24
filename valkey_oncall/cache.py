@@ -399,3 +399,33 @@ class Cache:
         sql = base + where
         rows = self._conn.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
+
+    def query_failure_sightings(
+        self,
+        test_name: str,
+        since: Optional[str] = None,
+        branch: Optional[str] = None,
+    ) -> List[Dict]:
+        """Failures of *test_name* joined to their job and run.
+
+        Filtered by the run's date (not parse time), so a backfilled log
+        lands on the day it ran. Newest first.
+        """
+        clauses = ["tf.test_name = ?"]
+        params: List[object] = [test_name]
+        if since is not None:
+            clauses.append("r.run_date >= ?")
+            params.append(since)
+        if branch is not None:
+            clauses.append("r.branch = ?")
+            params.append(branch)
+        sql = (
+            "SELECT tf.job_id, j.run_id, j.name AS job_name, tf.error_summary, "
+            "r.run_date, r.branch, r.commit_sha "
+            "FROM test_failures tf "
+            "JOIN jobs j ON tf.job_id = j.job_id "
+            "JOIN workflow_runs r ON j.run_id = r.run_id "
+            "WHERE " + " AND ".join(clauses) + " ORDER BY r.run_date DESC"
+        )
+        rows = self._conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]

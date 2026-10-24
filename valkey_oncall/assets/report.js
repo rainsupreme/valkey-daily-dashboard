@@ -138,8 +138,9 @@ window.addEventListener("load", initHeatmapScroll);
   var MIN_COLS = 14;
   // Fixed-width budget per date column (matches .date-col min-width: 32px)
   var COL_WIDTH = 32;
-  // Non-date columns: test-name (~340px) + trend sparkline (~100px) + padding
-  var FIXED_WIDTH = 460;
+  // Non-date columns: test-name (~340px) + tracked (~70px) + trend
+  // sparkline (~100px) + padding
+  var FIXED_WIDTH = 530;
   var styleEl = null;
 
   function adaptColumns() {
@@ -169,9 +170,10 @@ window.addEventListener("load", initHeatmapScroll);
       var cls = "hm-adaptive-" + idx;
       table.classList.add(cls);
 
-      // Date columns start at child position 3 (after test-name and the
-      // trend sparkline). Hide the first `hide` date columns (oldest).
-      var start = 3; // 1-indexed nth-child
+      // Date columns start at child position 4 (after test-name, the
+      // tracked issue column and the trend sparkline). Hide the first
+      // `hide` date columns (oldest).
+      var start = 4; // 1-indexed nth-child
       var end = start + hide - 1;
       rules.push(
         "." + cls + " tr > :nth-child(n+" + start + "):nth-child(-n+" + end + ")" +
