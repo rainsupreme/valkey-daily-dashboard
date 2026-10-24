@@ -702,9 +702,13 @@ class TestStaleBanner:
 
         _store_failure(cache, 1, 10, _day(1), "t in tests/unit/x.tcl")
         page = render_html(generate_report_data(cache, days=30))
-        assert f'class="stale-banner" role="alert" hidden data-latest="{_day(1)}"' in page
+        assert (
+            f'class="stale-banner" role="alert" hidden data-latest="{_day(1)}"' in page
+        )
         assert f'data-max-age-days="{MAX_RUN_AGE_DAYS}"' in page
-        assert "stale-banner[data-latest]" in page  # the script that shows it is inlined
+        assert (
+            "stale-banner[data-latest]" in page
+        )  # the script that shows it is inlined
 
     def test_banner_with_no_runs_has_an_empty_date(self, cache):
         page = render_html(generate_report_data(cache, days=30))

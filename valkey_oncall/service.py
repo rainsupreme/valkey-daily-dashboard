@@ -41,7 +41,9 @@ _WORKFLOW_EVENTS = {
 
 # A run listed before it finished carries one of these instead of a conclusion.
 # It is stored as seen and refreshed from a later listing.
-NON_FINAL_STATUSES = frozenset({"queued", "in_progress", "waiting", "pending", "requested", "unknown", ""})
+NON_FINAL_STATUSES = frozenset(
+    {"queued", "in_progress", "waiting", "pending", "requested", "unknown", ""}
+)
 
 # A listing of a workflow the cache already knows starts this many days before
 # its newest cached run, so a run that started late or was listed late is still
@@ -51,7 +53,9 @@ LISTING_MARGIN_DAYS = 3
 
 def _parse_run_date(value: str) -> Optional[datetime]:
     try:
-        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
     except (ValueError, TypeError):
         return None
 
@@ -391,7 +395,9 @@ class OnCallService:
                 _log(f"  Error fetching {wf} runs: {exc}")
                 continue
 
-            _log(f"  {len(new_runs)} new runs, {len(refreshed)} finished since last seen")
+            _log(
+                f"  {len(new_runs)} new runs, {len(refreshed)} finished since last seen"
+            )
             summary["new_runs_fetched"] += len(new_runs)
             summary["runs_refreshed"] += len(refreshed)
 
