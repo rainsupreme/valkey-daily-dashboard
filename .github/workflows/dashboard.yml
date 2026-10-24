@@ -80,7 +80,8 @@ jobs:
           # in progress on early runs, so this must never gate the deploy.
           rel = generate_releases_data(cache)
           Path('_site/report-releases.json').write_text(json.dumps(rel, indent=2))
-          rel_reason = stale_reason(rel['summary'].get('latest_week'), max_age_days=9)
+          from valkey_oncall.releases import WEEKLY_MAX_AGE_DAYS
+          rel_reason = stale_reason(rel['summary'].get('latest_week'), max_age_days=WEEKLY_MAX_AGE_DAYS)
           if rel_reason:
               print(f'WARNING: releases report stale — {rel_reason}', file=sys.stderr)
           # Daily freshness is the hard gate: nightly cadence is regular, and a
