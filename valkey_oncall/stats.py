@@ -215,3 +215,24 @@ def regression_rate_lower_bound(
     a = fails + a0
     b = (total - fails) + b0
     return beta_quantile(a, b, (1.0 - credible) / 2.0)
+
+
+def rate_credible_interval(
+    fails: int,
+    total: int,
+    credible: float = 0.90,
+    a0: float = PRIOR_A,
+    b0: float = PRIOR_B,
+) -> Tuple[float, float]:
+    """Central ``credible`` interval on a fail rate from ``fails`` of ``total``.
+
+    Same Beta posterior as :func:`regression_rate_lower_bound`, both ends.
+    With no observations the interval is the whole range ``(0.0, 1.0)``, so
+    a rate with no executions behind it never reads as precise.
+    """
+    if total <= 0:
+        return 0.0, 1.0
+    a = fails + a0
+    b = (total - fails) + b0
+    tail = (1.0 - credible) / 2.0
+    return beta_quantile(a, b, tail), beta_quantile(a, b, 1.0 - tail)
