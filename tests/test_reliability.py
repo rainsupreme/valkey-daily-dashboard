@@ -12,6 +12,7 @@ from valkey_oncall.flakes import FlakeEntry, FlakeRegistry
 from valkey_oncall.reliability import (
     FLAKE_RATE_BUDGET,
     compute_flake_rates,
+    compute_run_health,
     flake_rate_series,
 )
 from valkey_oncall.stats import rate_credible_interval
@@ -298,3 +299,148 @@ class TestFlakeRateSeries:
 
     def test_empty(self, cache):
         assert flake_rate_series(cache, now=NOW) == []
+
+
+class TestComputeRunHealth:
+    def _seed(self, cache, registry_summary="Expected '1' to be '0'"):
+        """Four scheduled runs, oldest first:
+
+        day 4: fully green (status success, both jobs ok).
+        day 3: one failed job, its only failure is the tracked flake.
+        day 2: two failed jobs: one tracked flake, one untracked test.
+        day 1: cancelled run with one cancelled job.
+        """
+        _store_run(
+            cache,
+            4,
+            _day(4),
+            [("job-x", "success", []), ("job-y", "success", [])],
+            status="success",
+        )
+        _store_run(
+            cache,
+            3,
+            _day(3),
+            [
+                ("job-x", "failure", [(TEST_A, registry_summary)]),
+                ("job-y", "success", []),
+            ],
+        )
+        _store_run(
+            cache,
+            2,
+            _day(2),
+            [
+                ("job-x", "failure", [(TEST_A, registry_summary)]),
+                ("job-y", "failure", [(TEST_B, "boom")]),
+            ],
+        )
+        _store_run(
+            cache,
+            1,
+            _day(1),
+            [("job-x", "success", []), ("job-y", "cancelled", [])],
+            status="cancelled",
+        )
+        return FlakeRegistry(
+            [FlakeEntry(test_name=TEST_A, summary=registry_summary, issue=1)]
+        )
+
+    def test_per_run_fields(self, cache):
+        registry = self._seed(cache)
+        data = compute_run_health(cache, registry, now=NOW, event="schedule")
+        runs = data["runs"]
+        assert [r["date"] for r in runs] == [_day(4), _day(3), _day(2), _day(1)]
+
+        green, tracked, mixed, cancelled = runs
+        assert green["fully_green"] is True
+        assert green["failed_jobs"] == 0
+        assert green["green_share"] == 1.0
+        assert green["green_if_tracked_fixed"] is True
+
+        assert tracked["fully_green"] is False
+        assert tracked["failed_jobs"] == 1
+        assert tracked["green_share"] == 0.5
+        assert tracked["unexplained_failed_jobs"] == []
+        assert tracked["green_if_tracked_fixed"] is True
+
+        assert mixed["failed_jobs"] == 2
+        assert mixed["failed_job_names"] == ["job-x", "job-y"]
+        assert mixed["unexplained_failed_jobs"] == ["job-y"]
+        assert mixed["unexplained_failed_job_count"] == 1
+        assert mixed["green_if_tracked_fixed"] is False
+
+        assert cancelled["fully_green"] is False
+        assert cancelled["cancelled_jobs"] == 1
+        assert cancelled["cancelled_job_names"] == ["job-y"]
+        assert cancelled["failed_jobs"] == 0
+        # A cancelled run has no unexplained failed job but is still not green.
+        assert cancelled["green_if_tracked_fixed"] is False
+
+    def test_failed_job_without_parsed_rows_is_unexplained(self, cache):
+        registry = FlakeRegistry([FlakeEntry(test_name=TEST_A, issue=1)])
+        _store_run(cache, 1, _day(1), [("job-x", "failure", [])])
+        (run,) = compute_run_health(cache, registry, now=NOW)["runs"]
+        assert run["unexplained_failed_jobs"] == ["job-x"]
+
+    def test_without_registry_nothing_is_explained(self, cache):
+        self._seed(cache)
+        data = compute_run_health(cache, None, now=NOW, event="schedule")
+        assert data["runs"][1]["unexplained_failed_jobs"] == ["job-x"]
+        assert data["meta"]["registry_entries"] == 0
+
+    def test_rolling_windows(self, cache):
+        registry = self._seed(cache)
+        data = compute_run_health(cache, registry, now=NOW, event="schedule")
+        r30 = data["rolling30"]
+        assert [p["runs"] for p in r30] == [1, 2, 3, 4]
+        last = r30[-1]
+        assert last["green_runs"] == 1
+        assert last["green_rate"] == 0.25
+        assert last["green_if_fixed_rate"] == 0.5  # days 4 and 3
+        assert last["mean_failed_jobs"] == 0.75  # 0 + 1 + 2 + 0
+        assert last["median_failed_jobs"] == 0.5
+        assert last["mean_unexplained_failed_jobs"] == 0.25
+        # green shares: 1.0, 0.5, 0.0, 1.0 (cancelled run: one settled ok job)
+        assert last["mean_green_share"] == pytest.approx(0.625)
+
+        r7 = data["rolling7"]
+        assert [p["runs"] for p in r7] == [1, 2, 3, 4]
+        assert r7[0]["green_rate"] == 1.0
+
+    def test_rolling_window_length(self, cache):
+        for i in range(10):
+            _store_run(
+                cache, i + 1, _day(i + 1), [("job-x", "success", [])], status="success"
+            )
+        data = compute_run_health(cache, None, now=NOW)
+        assert [p["runs"] for p in data["rolling7"]][-1] == 7
+        assert [p["runs"] for p in data["rolling30"]][-1] == 10
+
+    def test_event_filter_and_cancelled_exclusion(self, cache):
+        self._seed(cache)
+        _store_run(
+            cache,
+            9,
+            _day(5),
+            [("job-x", "success", [])],
+            status="success",
+            event="workflow_dispatch",
+        )
+        scheduled = compute_run_health(cache, None, now=NOW, event="schedule")
+        assert len(scheduled["runs"]) == 4
+        everything = compute_run_health(cache, None, now=NOW)
+        assert len(everything["runs"]) == 5
+        no_cancel = compute_run_health(
+            cache, None, now=NOW, event="schedule", include_cancelled=False
+        )
+        assert [r["status"] for r in no_cancel["runs"]] == [
+            "success",
+            "failure",
+            "failure",
+        ]
+
+    def test_empty(self, cache):
+        data = compute_run_health(cache, None, now=NOW)
+        assert data["runs"] == []
+        assert data["rolling7"] == [] and data["rolling30"] == []

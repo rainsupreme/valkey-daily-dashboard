@@ -33,10 +33,23 @@ Limits
   per-job rows stay correct because T is only counted in jobs where it was
   seen, but the per-test aggregate mixes jobs with different suites.
 * A test renamed inside the window appears as two tests.
+
+Run health
+----------
+:func:`compute_run_health` looks at whole runs: failed jobs, the share of
+green jobs, whether the run was fully green, and how many failed jobs are
+*not explained* by the flake registry. A failed job is explained when it has
+at least one parsed failure row and every row matches a registry entry
+exactly (same test, and the entry's failure mode when it has one). A failed
+job with no parsed rows (build error, expired log, timeout) is never
+explained. A run is "green if tracked flakes were fixed" when it was not
+cancelled and every failed job is explained. Rolling 7-run and 30-run
+values are given per run, oldest first.
 """
 
 from __future__ import annotations
 
+import statistics
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
@@ -254,3 +267,130 @@ def flake_rate_series(
             }
         )
     return out
+
+
+# ----------------------------------------------------------------------
+# Run health
+# ----------------------------------------------------------------------
+
+ROLLING_SHORT = 7
+ROLLING_LONG = 30
+
+
+def _explained(registry: Optional[FlakeRegistry], rows: List[tuple]) -> bool:
+    """True when every parsed failure row of a job is a tracked flake."""
+    if registry is None or not rows:
+        return False
+    for name, summary, _job in rows:
+        if not any(m.tier == TIER_EXACT for m in registry.match(name, summary)):
+            return False
+    return True
+
+
+def _run_health(run: Dict, registry: Optional[FlakeRegistry]) -> Dict:
+    by_conclusion: Dict[str, List[Dict]] = defaultdict(list)
+    for j in run["jobs"]:
+        by_conclusion[j["conclusion"]].append(j)
+    failed = sorted(by_conclusion.get("failure", []), key=lambda j: j["name"])
+    rows_by_job: Dict[str, List[tuple]] = defaultdict(list)
+    for row in run["failures"]:
+        rows_by_job[row[2]].append(row)
+    unexplained = [
+        j["name"] for j in failed if not _explained(registry, rows_by_job[j["name"]])
+    ]
+    n_ok = len(by_conclusion.get("success", []))
+    n_fail = len(failed)
+    cancelled = sorted(j["name"] for j in by_conclusion.get("cancelled", []))
+    settled = n_ok + n_fail
+    return {
+        "run_id": run["run_id"],
+        "date": _day(run),
+        "commit_sha": run.get("commit_sha", ""),
+        "status": run["status"],
+        "total_jobs": len(run["jobs"]),
+        "success_jobs": n_ok,
+        "failed_jobs": n_fail,
+        "cancelled_jobs": len(cancelled),
+        "skipped_jobs": len(by_conclusion.get("skipped", [])),
+        "failed_job_names": [j["name"] for j in failed],
+        "cancelled_job_names": cancelled,
+        "green_share": round(n_ok / settled, 4) if settled else None,
+        "fully_green": run["status"] == "success" and n_fail == 0 and not cancelled,
+        "unexplained_failed_jobs": unexplained,
+        "unexplained_failed_job_count": len(unexplained),
+        "green_if_tracked_fixed": run["status"] != "cancelled" and not unexplained,
+    }
+
+
+def _rolling(runs: List[Dict], n: int) -> List[Dict]:
+    """Rolling values over the last *n* runs ending at each run."""
+    out: List[Dict] = []
+    for i in range(len(runs)):
+        w = runs[max(0, i - n + 1) : i + 1]
+        shares = [x["green_share"] for x in w if x["green_share"] is not None]
+        out.append(
+            {
+                "date": w[-1]["date"],
+                "runs": len(w),
+                "green_runs": sum(1 for x in w if x["fully_green"]),
+                "green_rate": round(sum(1 for x in w if x["fully_green"]) / len(w), 4),
+                "green_if_fixed_rate": round(
+                    sum(1 for x in w if x["green_if_tracked_fixed"]) / len(w), 4
+                ),
+                "mean_failed_jobs": round(
+                    statistics.mean(x["failed_jobs"] for x in w), 3
+                ),
+                "median_failed_jobs": statistics.median(x["failed_jobs"] for x in w),
+                "mean_unexplained_failed_jobs": round(
+                    statistics.mean(x["unexplained_failed_job_count"] for x in w), 3
+                ),
+                "mean_green_share": round(statistics.mean(shares), 4)
+                if shares
+                else None,
+            }
+        )
+    return out
+
+
+def compute_run_health(
+    cache: Cache,
+    registry: Optional[FlakeRegistry] = None,
+    days: int = 90,
+    branch: str = "unstable",
+    workflow: str = "daily.yml",
+    repo: str = "valkey-io/valkey",
+    event: Optional[str] = None,
+    include_cancelled: bool = True,
+    now: Optional[datetime] = None,
+) -> Dict:
+    """Per-run health over the last *days* days with rolling values.
+
+    *event* restricts runs to one trigger (``schedule`` keeps hand-started
+    nightly runs out of the green rate). *include_cancelled* is for workflows
+    with cancel-in-progress concurrency (ci.yml): a run cancelled by a newer
+    push never reached a verdict and is left out when False. A cancelled
+    nightly run is kept: it is a night without a green result.
+    """
+    now = now or datetime.now(timezone.utc)
+    since_day = (now - timedelta(days=days)).strftime("%Y-%m-%d")
+    runs = _load_runs(cache, repo, workflow, branch, since_day, event)
+    if not include_cancelled:
+        runs = [r for r in runs if r["status"] != "cancelled"]
+    health = [_run_health(r, registry) for r in runs]
+    return {
+        "meta": {
+            "days": days,
+            "branch": branch,
+            "workflow": workflow,
+            "repo": repo,
+            "event": event,
+            "include_cancelled": include_cancelled,
+            "runs": len(health),
+            "window_start": since_day,
+            "window_end": now.strftime("%Y-%m-%d"),
+            "registry_entries": len(registry.entries()) if registry else 0,
+        },
+        "runs": health,
+        "rolling7": _rolling(health, ROLLING_SHORT),
+        "rolling30": _rolling(health, ROLLING_LONG),
+    }
