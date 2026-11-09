@@ -146,3 +146,19 @@ pre { background: #161b22; padding: 12px; border-radius: 6px; overflow-x: auto;
 /* Failure cells deep-link to the failing job's log on GitHub */
 .cell.fail a{color:inherit;text-decoration:none;display:block;width:100%;height:100%}
 .cell.fail a:hover{text-decoration:underline}
+/* Reliability SLA tab: stat cards wrap on narrow screens; charts are inline
+   SVG scaled to the column width (no script, no network). */
+.sla-stats{flex-wrap:wrap;gap:12px}
+.sla-stats .stat{min-width:170px;max-width:260px}
+.sla-stats .stat-label{line-height:1.3}
+.sla-dim{color:#8b949e;font-size:0.9rem;font-weight:400}
+.sla-chart{display:block;width:100%;max-width:760px;height:150px;background:#161b22;border:1px solid #21262d;border-radius:6px}
+.sla-axis{fill:#8b949e;font-size:10px;text-anchor:end;font-family:monospace}
+.sla-date{text-anchor:start}
+.sla-end{text-anchor:end}
+.sla-target-label{fill:#d29922}
+.sla-base{stroke:#30363d;stroke-width:1}
+.sla-target{stroke:#d29922;stroke-width:1;stroke-dasharray:4 3}
+.sla-legend{font-size:0.6875rem;color:#8b949e;margin:4px 0 12px}
+.sla-key{margin-right:12px;white-space:nowrap}
+.sla-key i{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:middle;margin-right:4px}

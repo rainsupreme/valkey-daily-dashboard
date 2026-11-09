@@ -293,7 +293,8 @@ class TestFlakeRateSeries:
         assert by_date[_day(50)]["tests_over_budget_confident"] == 1  # 1 of 1
         assert by_date[_day(40)]["tests_over_budget"] == 1
         assert by_date[_day(30)]["runs"] == 3
-        # Day 50 is exactly 30 days before day 20's window start: excluded.
+        # Day 50 is 40 days before day 10: outside its window.
+        assert by_date[_day(10)]["runs"] == 3  # days 40, 30 and 10
         assert by_date[_day(10)]["tests_over_budget"] == 0
         assert by_date[_day(10)]["failing_tests"] == 0
 

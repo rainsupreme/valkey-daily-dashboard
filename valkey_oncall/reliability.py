@@ -394,3 +394,50 @@ def compute_run_health(
         "rolling7": _rolling(health, ROLLING_SHORT),
         "rolling30": _rolling(health, ROLLING_LONG),
     }
+
+
+# ----------------------------------------------------------------------
+# Report block
+# ----------------------------------------------------------------------
+
+# Rolling 30-run fully green rate the dashboard draws as the target line.
+# daily.yml: 50% first (what the 1% per-test budget buys with today's number
+# of flaky (test, job) pairs). ci.yml: 95%, the bar for a required check.
+GREEN_RATE_TARGETS = {"daily.yml": 0.50, "ci.yml": 0.95}
+
+# Trigger event that counts for each workflow: the nightly schedule, and
+# post-merge pushes for CI. Hand-started runs are left out of the rates.
+RUN_EVENTS = {"daily.yml": "schedule", "ci.yml": "push"}
+
+# Workflows with cancel-in-progress concurrency, where a cancelled run is a
+# superseded run rather than a failed night.
+CANCEL_IN_PROGRESS = ("ci.yml",)
+
+
+def compute_reliability(
+    cache: Cache,
+    registry: Optional[FlakeRegistry] = None,
+    days: int = 90,
+    branch: str = "unstable",
+    workflow: str = "daily.yml",
+    repo: str = "valkey-io/valkey",
+    now: Optional[datetime] = None,
+) -> Dict:
+    """Everything the report's Reliability SLA section reads, for one workflow."""
+    event = RUN_EVENTS.get(workflow)
+    kwargs = dict(branch=branch, workflow=workflow, repo=repo, event=event, now=now)
+    return {
+        "targets": {
+            "green_rate": GREEN_RATE_TARGETS.get(workflow),
+            "flake_rate": FLAKE_RATE_BUDGET,
+        },
+        "run_health": compute_run_health(
+            cache,
+            registry,
+            days=days,
+            include_cancelled=workflow not in CANCEL_IN_PROGRESS,
+            **kwargs,
+        ),
+        "flake_rates": compute_flake_rates(cache, registry=registry, **kwargs),
+        "over_budget_series": flake_rate_series(cache, days=days, **kwargs),
+    }
