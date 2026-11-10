@@ -1,5 +1,6 @@
 """Tests for report data generation (scorecard leaderboard wiring)."""
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -17,7 +18,7 @@ def _day(offset):
     return (datetime.now(timezone.utc) - timedelta(days=offset)).strftime("%Y-%m-%d")
 
 
-def _make_run(run_id, date_str, status="failure"):
+def _make_run(run_id, date_str, status="failure", event="schedule"):
     return {
         "run_id": run_id,
         "repo": "valkey-io/valkey",
@@ -26,6 +27,7 @@ def _make_run(run_id, date_str, status="failure"):
         "branch": "unstable",
         "commit_sha": f"sha{run_id}",
         "run_date": f"{date_str}T06:00:00Z",
+        "raw_json": json.dumps({"event": event}),
     }
 
 
@@ -178,6 +180,7 @@ class TestRegressions:
                     "branch": "unstable",
                     "commit_sha": sha,
                     "run_date": f"{date}T06:00:00Z",
+                    "raw_json": '{"event": "schedule"}',
                 }
             ]
         )
@@ -896,3 +899,103 @@ class TestSlaChart:
         pts = [{"date": "2026-11-01", "v": 1}]
         svg = _sla_chart(pts, [{"key": "v", "label": "v", "color": "#f00"}])
         assert "sla-gap" not in svg and "sla-hatch" not in svg
+
+
+class TestScheduleOnlyDaily:
+    """Only the nightly schedule runs of daily.yml are Daily runs.
+
+    daily.yml is also started by hand (workflow_dispatch) to confirm fixes
+    against a PR head. Those runs must never stand in for a nightly, and
+    every chart has to end on the same latest scheduled run.
+    """
+
+    def _run(self, cache, run_id, day, status, event, failing_test=None):
+        cache.store_runs([_make_run(run_id, day, status, event=event)])
+        job_id = run_id * 100
+        cache.store_jobs(
+            run_id,
+            [
+                {
+                    "job_id": job_id,
+                    "name": "test-ubuntu",
+                    "status": "completed",
+                    "conclusion": "failure" if failing_test else "success",
+                }
+            ],
+        )
+        if failing_test:
+            cache.store_failures(
+                job_id,
+                [{"test_name": failing_test, "error_summary": "e", "log_lines": "x"}],
+            )
+
+    def test_schedule_run_wins_over_dispatch_on_same_day(self, cache):
+        # The hand-started run finished first (success); the nightly on the
+        # same date failed. Before the fix the first run of the day won.
+        self._run(cache, 10, _day(1), "success", "workflow_dispatch")
+        self._run(cache, 11, _day(1), "failure", "schedule", "x in tests/unit/a.tcl")
+        data = generate_report_data(cache, days=7)
+
+        assert [r["run_id"] for r in data["runs"]] == [11]
+        assert data["runs"][0]["status"] == "failure"
+        assert data["summary"]["failed_runs"] == 1
+        assert "x in tests/unit/a.tcl" in data["tests"]
+        health = data["reliability"]["run_health"]["runs"]
+        assert [r["run_id"] for r in health] == [11]
+        assert [t["test_name"] for t in data["scorecard"]["scorecards"]] == [
+            "x in tests/unit/a.tcl"
+        ]
+
+    def test_day_with_only_a_dispatch_run_has_no_daily_entry(self, cache):
+        self._run(cache, 20, _day(2), "failure", "schedule", "x in tests/unit/a.tcl")
+        self._run(
+            cache, 21, _day(1), "failure", "workflow_dispatch", "y in tests/unit/b.tcl"
+        )
+        data = generate_report_data(cache, days=7)
+
+        assert data["dates"] == [_day(2)]
+        assert data["summary"]["latest_run_date"] == _day(2)
+        assert "y in tests/unit/b.tcl" not in data["tests"]
+        assert all(
+            t["test_name"] != "y in tests/unit/b.tcl"
+            for t in data["scorecard"]["scorecards"]
+        )
+        assert all(
+            r["test_name"] != "y in tests/unit/b.tcl" for r in data["regressions"]
+        )
+
+    def test_event_all_keeps_dispatch_runs(self, cache):
+        self._run(
+            cache, 30, _day(1), "failure", "workflow_dispatch", "x in tests/unit/a.tcl"
+        )
+        assert generate_report_data(cache, days=7)["runs"] == []
+        data = generate_report_data(cache, days=7, event="all")
+        assert [r["run_id"] for r in data["runs"]] == [30]
+
+    def test_every_chart_series_ends_on_the_latest_scheduled_run(self, cache):
+        # A scheduled nightly every day, plus a newer hand-started run that
+        # must not extend any chart.
+        for i in range(5, 0, -1):
+            self._run(
+                cache, 100 + i, _day(i), "failure", "schedule", "x in tests/unit/a.tcl"
+            )
+        self._run(cache, 200, _day(0), "success", "workflow_dispatch")
+        data = generate_report_data(cache, days=30)
+        rel = data["reliability"]
+
+        last = {
+            "heatmap": data["dates"][-1],
+            "runs": data["runs"][-1]["day"],
+            "run_health": rel["run_health"]["runs"][-1]["date"],
+            "rolling7": rel["run_health"]["rolling7"][-1]["date"],
+            "rolling30": rel["run_health"]["rolling30"][-1]["date"],
+            "over_budget_series": rel["over_budget_series"][-1]["date"],
+            "flake_rates_last_failure": max(
+                t["last_failure"] for t in rel["flake_rates"]["tests"]
+            ),
+            "scorecard_last_seen": max(
+                t["last_seen"] for t in data["scorecard"]["scorecards"]
+            ),
+        }
+        assert set(last.values()) == {_day(1)}, last
+        assert data["summary"]["latest_run_date"] == _day(1)

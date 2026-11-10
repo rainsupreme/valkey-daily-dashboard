@@ -62,7 +62,7 @@ from valkey_oncall.cache import Cache
 from valkey_oncall.flakes import TIER_EXACT, FlakeRegistry
 from valkey_oncall.log_parser import sanitize_cached_failure
 from valkey_oncall.stats import rate_credible_interval
-from valkey_oncall.windowing import select_runs
+from valkey_oncall.windowing import run_event, select_runs
 
 # Per-test budget: a test failing in more than this share of its executions
 # is over budget (the "under 1% per execution" goal).
@@ -429,10 +429,6 @@ def compute_run_health(
 # of flaky (test, job) pairs). ci.yml: 95%, the bar for a required check.
 GREEN_RATE_TARGETS = {"daily.yml": 0.50, "ci.yml": 0.95}
 
-# Trigger event that counts for each workflow: the nightly schedule, and
-# post-merge pushes for CI. Hand-started runs are left out of the rates.
-RUN_EVENTS = {"daily.yml": "schedule", "ci.yml": "push"}
-
 # Workflows with cancel-in-progress concurrency, where a cancelled run is a
 # superseded run rather than a failed night.
 CANCEL_IN_PROGRESS = ("ci.yml",)
@@ -446,9 +442,16 @@ def compute_reliability(
     workflow: str = "daily.yml",
     repo: str = "valkey-io/valkey",
     now: Optional[datetime] = None,
+    event: Optional[str] = None,
 ) -> Dict:
-    """Everything the report's Reliability SLA section reads, for one workflow."""
-    event = RUN_EVENTS.get(workflow)
+    """Everything the report's Reliability SLA section reads, for one workflow.
+
+    *event* selects the trigger event to keep (see
+    :func:`valkey_oncall.windowing.run_event`): the nightly schedule for
+    daily.yml and post-merge pushes for ci.yml by default, so hand-started
+    runs stay out of the rates.
+    """
+    event = run_event(workflow, event)
     kwargs = dict(branch=branch, workflow=workflow, repo=repo, event=event, now=now)
     return {
         "targets": {
