@@ -45,6 +45,10 @@ job with no parsed rows (build error, expired log, timeout) is never
 explained. A run is "green if tracked flakes were fixed" when it was not
 cancelled and every failed job is explained. Rolling 7-run and 30-run
 values are given per run, oldest first.
+
+Sync fetches jobs only for failed runs, so a cancelled run usually has no
+job rows. Its ``failed_jobs_known`` is False: it still counts as a night
+that was not green, but it is left out of the failed-job mean and median.
 """
 
 from __future__ import annotations
@@ -302,6 +306,10 @@ def _run_health(run: Dict, registry: Optional[FlakeRegistry]) -> Dict:
     n_fail = len(failed)
     cancelled = sorted(j["name"] for j in by_conclusion.get("cancelled", []))
     settled = n_ok + n_fail
+    # Sync stores jobs only for failed runs, so a cancelled run usually has
+    # no job rows at all: its failed-job count is unknown, not zero. A
+    # successful run has no failed job even without job rows.
+    known = run["status"] == "success" or settled > 0
     return {
         "run_id": run["run_id"],
         "date": _day(run),
@@ -310,6 +318,7 @@ def _run_health(run: Dict, registry: Optional[FlakeRegistry]) -> Dict:
         "total_jobs": len(run["jobs"]),
         "success_jobs": n_ok,
         "failed_jobs": n_fail,
+        "failed_jobs_known": known,
         "cancelled_jobs": len(cancelled),
         "skipped_jobs": len(by_conclusion.get("skipped", [])),
         "failed_job_names": [j["name"] for j in failed],
@@ -318,16 +327,24 @@ def _run_health(run: Dict, registry: Optional[FlakeRegistry]) -> Dict:
         "fully_green": run["status"] == "success" and n_fail == 0 and not cancelled,
         "unexplained_failed_jobs": unexplained,
         "unexplained_failed_job_count": len(unexplained),
-        "green_if_tracked_fixed": run["status"] != "cancelled" and not unexplained,
+        "green_if_tracked_fixed": run["status"] != "cancelled"
+        and known
+        and not unexplained,
     }
 
 
 def _rolling(runs: List[Dict], n: int) -> List[Dict]:
-    """Rolling values over the last *n* runs ending at each run."""
+    """Rolling values over the last *n* runs ending at each run.
+
+    Green rates count every run in the window (a run without job data is
+    not green). Failed-job means and the median count only runs whose
+    failed-job count is known, and are None when there is none.
+    """
     out: List[Dict] = []
     for i in range(len(runs)):
         w = runs[max(0, i - n + 1) : i + 1]
         shares = [x["green_share"] for x in w if x["green_share"] is not None]
+        k = [x for x in w if x["failed_jobs_known"]]
         out.append(
             {
                 "date": w[-1]["date"],
@@ -337,13 +354,20 @@ def _rolling(runs: List[Dict], n: int) -> List[Dict]:
                 "green_if_fixed_rate": round(
                     sum(1 for x in w if x["green_if_tracked_fixed"]) / len(w), 4
                 ),
+                "job_data_runs": len(k),
                 "mean_failed_jobs": round(
-                    statistics.mean(x["failed_jobs"] for x in w), 3
-                ),
-                "median_failed_jobs": statistics.median(x["failed_jobs"] for x in w),
+                    statistics.mean(x["failed_jobs"] for x in k), 3
+                )
+                if k
+                else None,
+                "median_failed_jobs": statistics.median(x["failed_jobs"] for x in k)
+                if k
+                else None,
                 "mean_unexplained_failed_jobs": round(
-                    statistics.mean(x["unexplained_failed_job_count"] for x in w), 3
-                ),
+                    statistics.mean(x["unexplained_failed_job_count"] for x in k), 3
+                )
+                if k
+                else None,
                 "mean_green_share": round(statistics.mean(shares), 4)
                 if shares
                 else None,

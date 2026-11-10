@@ -445,3 +445,41 @@ class TestComputeRunHealth:
         data = compute_run_health(cache, None, now=NOW)
         assert data["runs"] == []
         assert data["rolling7"] == [] and data["rolling30"] == []
+
+    def test_cancelled_run_without_jobs_is_unknown_not_zero(self, cache):
+        # Sync stores jobs only for failed runs, so a cancelled night arrives
+        # with no job rows (2026-11-06 and 2026-11-07 on unstable). A green
+        # run without job rows still has a known count of zero.
+        _store_run(
+            cache, 1, _day(3), [("job-x", "failure", [(TEST_A, "e")])]
+        )  # 1 failed
+        _store_run(cache, 2, _day(2), [], status="cancelled")
+        _store_run(cache, 3, _day(1), [], status="success")
+        data = compute_run_health(cache, None, now=NOW, event="schedule")
+        failed, cancelled, green = data["runs"]
+        assert failed["failed_jobs_known"] is True
+        assert green["failed_jobs_known"] is True
+        assert cancelled["failed_jobs_known"] is False
+        assert cancelled["fully_green"] is False
+        assert cancelled["green_if_tracked_fixed"] is False
+
+        last = data["rolling30"][-1]
+        assert last["runs"] == 3 and last["job_data_runs"] == 2
+        assert last["green_rate"] == pytest.approx(1 / 3, abs=1e-3)
+        assert last["mean_failed_jobs"] == 0.5  # (1 + 0) / 2, not / 3
+        assert last["median_failed_jobs"] == 0.5
+        assert last["mean_unexplained_failed_jobs"] == 0.5
+
+    def test_failed_run_without_jobs_is_not_green_if_fixed(self, cache):
+        _store_run(cache, 1, _day(1), [], status="failure")
+        (run,) = compute_run_health(cache, None, now=NOW)["runs"]
+        assert run["failed_jobs_known"] is False
+        assert run["green_if_tracked_fixed"] is False
+
+    def test_window_with_only_unknown_runs_has_no_mean(self, cache):
+        _store_run(cache, 1, _day(1), [], status="cancelled")
+        last = compute_run_health(cache, None, now=NOW)["rolling30"][-1]
+        assert last["job_data_runs"] == 0
+        assert last["mean_failed_jobs"] is None
+        assert last["median_failed_jobs"] is None
+        assert last["mean_unexplained_failed_jobs"] is None

@@ -159,6 +159,9 @@ pre { background: #161b22; padding: 12px; border-radius: 6px; overflow-x: auto;
 .sla-target-label{fill:#d29922}
 .sla-base{stroke:#30363d;stroke-width:1}
 .sla-target{stroke:#d29922;stroke-width:1;stroke-dasharray:4 3}
+.sla-gap{fill:url(#sla-hatch);stroke:#8b949e;stroke-width:0.5;stroke-opacity:0.5}
+.sla-gap-mark{fill:#8b949e;font-size:10px;text-anchor:middle;font-family:monospace}
+.sla-key i.sla-key-gap{background:repeating-linear-gradient(45deg,#8b949e 0 2px,transparent 2px 4px)}
 .sla-legend{font-size:0.6875rem;color:#8b949e;margin:4px 0 12px}
 .sla-key{margin-right:12px;white-space:nowrap}
 .sla-key i{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:middle;margin-right:4px}

@@ -834,3 +834,65 @@ class TestReliabilityTab:
         html = render_html(data)
         assert "no scheduled nightly runs in the window" in html
         assert "no runs in the window" in html
+
+    def test_target_label_has_at_most_two_decimals(self, cache):
+        registry = self._seed(cache)
+        html = render_html(generate_report_data(cache, days=14, registry=registry))
+        # The failed-jobs budget is -ln(0.5) = 0.693147...
+        assert "target 0.69<" in html
+        assert "0.693" not in html
+
+    def test_cancelled_night_without_jobs_is_a_gap_not_a_zero(self, cache):
+        registry = self._seed(cache)
+        # A cancelled scheduled run with no job rows, as sync stores it.
+        cache.store_runs(
+            [
+                {
+                    **_make_run(9, _day(0), "cancelled"),
+                    "raw_json": '{"event": "schedule"}',
+                }
+            ]
+        )
+        data = generate_report_data(cache, days=14, registry=registry)
+        last = data["reliability"]["run_health"]["rolling30"][-1]
+        assert last["runs"] == 4 and last["job_data_runs"] == 3
+        assert last["mean_failed_jobs"] == pytest.approx(2 / 3, abs=1e-3)
+        html = render_html(data)
+        chart = html.split("failed jobs per nightly run</h3>")[1].split("</svg>")[0]
+        assert chart.count('class="sla-gap"') == 1
+        assert f"{_day(0)} · cancelled, no job data" in chart
+        assert "no job data</span>" in html  # legend entry
+        # The tooltip says what the stat is averaged over.
+        assert "the 3 of the last 4 runs with job data" in html
+
+
+class TestSlaChart:
+    def test_number_format(self):
+        from valkey_oncall.report import _sla_chart
+
+        pts = [{"date": "2026-11-01", "v": 12.0}, {"date": "2026-11-02", "v": 0.5}]
+        svg = _sla_chart(pts, [{"key": "v", "label": "v", "color": "#f00"}], 0.693147)
+        assert "target 0.69<" in svg
+        assert ">12<" in svg  # axis top, no trailing .00
+        assert "v: 0.5<" in svg
+        assert "0.693" not in svg
+
+    def test_percent_format_unchanged(self):
+        from valkey_oncall.report import _sla_chart
+
+        pts = [{"date": "2026-11-01", "v": 0.25}]
+        svg = _sla_chart(
+            pts,
+            [{"key": "v", "label": "v", "color": "#f00"}],
+            target=0.5,
+            ymax=1.0,
+            percent=True,
+        )
+        assert "target 50%" in svg and "v: 25%" in svg
+
+    def test_no_gap_no_hatch(self):
+        from valkey_oncall.report import _sla_chart
+
+        pts = [{"date": "2026-11-01", "v": 1}]
+        svg = _sla_chart(pts, [{"key": "v", "label": "v", "color": "#f00"}])
+        assert "sla-gap" not in svg and "sla-hatch" not in svg

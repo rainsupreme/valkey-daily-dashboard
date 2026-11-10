@@ -1389,8 +1389,11 @@ def _sla_chart(
     *points* are dicts with a ``date`` and the keys named by *series*, oldest
     first; one x position per point. Each series is ``{"key", "label",
     "color", "kind"}`` with kind ``line`` or ``bars``. A dashed *target*
-    line is drawn when given. Every point carries a ``<title>`` tooltip, so
-    the chart needs no script and no network.
+    line is drawn when given. A point with a ``gap`` string (for example
+    "cancelled, no job data") has no value: it is drawn as a grey hatched
+    column with an "x" and the string in its tooltip, so it does not read
+    as a zero. Every point carries a ``<title>`` tooltip, so the chart
+    needs no script and no network.
     """
     if not points:
         return '<p class="no-commits">no runs in the window</p>'
@@ -1416,9 +1419,29 @@ def _sla_chart(
     def fmt(v) -> str:
         if v is None:
             return "n/a"
-        return f"{v * 100:.0f}%" if percent else f"{v:g}"
+        if percent:
+            return f"{v * 100:.0f}%"
+        # At most 2 decimals, trailing zeros dropped: 0.693147 -> 0.69, 12.0 -> 12.
+        return f"{v:.2f}".rstrip("0").rstrip(".")
 
     out: List[str] = []
+    gaps = [i for i, p in enumerate(points) if p.get("gap")]
+    if gaps:
+        # shortcut: a fixed pattern id; fine while only one chart per page has
+        # gaps (same definition either way), make it unique if that changes.
+        out.append(
+            '<defs><pattern id="sla-hatch" width="4" height="4" '
+            'patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'
+            '<rect width="2" height="4" fill="#8b949e" opacity="0.35"/>'
+            "</pattern></defs>"
+        )
+    for i in gaps:
+        out.append(
+            f'<rect class="sla-gap" x="{x_at(i) - bw / 2:.1f}" y="{pad_t}" '
+            f'width="{bw:.1f}" height="{plot_h}"/>'
+            f'<text class="sla-gap-mark" x="{x_at(i):.1f}" '
+            f'y="{pad_t + plot_h - 2:.1f}">x</text>'
+        )
     # Axis labels: zero, top, and the target.
     out.append(
         f'<text x="{pad_l - 4}" y="{pad_t + plot_h}" class="sla-axis">{fmt(0.0)}</text>'
@@ -1462,11 +1485,14 @@ def _sla_chart(
                 )
     # Tooltip hit areas, one per point (drawn last so they sit on top).
     for i, p in enumerate(points):
-        parts = [p["date"]] + [
-            f"{s['label']}: {fmt(p.get(s['key']))}"
-            + (f" ({p['runs']} runs)" if s.get("show_runs") and "runs" in p else "")
-            for s in series
-        ]
+        if p.get("gap"):
+            parts = [p["date"], p["gap"]]
+        else:
+            parts = [p["date"]] + [
+                f"{s['label']}: {fmt(p.get(s['key']))}"
+                + (f" ({p['runs']} runs)" if s.get("show_runs") and "runs" in p else "")
+                for s in series
+            ]
         out.append(
             f'<rect x="{pad_l + i * step:.1f}" y="{pad_t}" width="{step:.1f}" '
             f'height="{plot_h}" fill="transparent">'
@@ -1482,6 +1508,8 @@ def _sla_chart(
         f'<span class="sla-key"><i style="background:{s["color"]}"></i>{html.escape(s["label"])}</span>'
         for s in series
     )
+    if gaps:
+        legend += ' <span class="sla-key"><i class="sla-key-gap"></i>no job data</span>'
     return (
         f'<svg class="sla-chart" viewBox="0 0 {width} {height}" '
         f'preserveAspectRatio="none" role="img">{"".join(out)}</svg>'
@@ -1524,17 +1552,27 @@ def _render_sla_panel(data: Dict, ci_data: Dict | None = None) -> str:
             f"fully green nightly runs · target {daily_target * 100:.0f}%",
             f"last {last['runs']} scheduled daily.yml runs, to {last['date']}",
         )
+        n_known = last.get("job_data_runs", last["runs"])
+        over = (
+            f"the {n_known} of the last {last['runs']} runs with job data"
+            if n_known != last["runs"]
+            else f"the last {last['runs']} runs"
+        )
+        mean_fj = last["mean_failed_jobs"]
+        mean_un = last["mean_unexplained_failed_jobs"]
+        median_fj = last["median_failed_jobs"]
         stats += _sla_stat(
-            f"{last['mean_failed_jobs']:.2f}",
+            f"{mean_fj:.2f}" if mean_fj is not None else "—",
             f"failed jobs per nightly run · budget {job_budget:.2f}",
-            f"mean over the last {last['runs']} runs (median "
-            f"{last['median_failed_jobs']:g}); P(green) = exp(-mean), so "
-            f"{daily_target * 100:.0f}% green needs a mean under {job_budget:.2f}",
+            f"mean over {over} (median {median_fj:g}); P(green) = exp(-mean), so "
+            f"{daily_target * 100:.0f}% green needs a mean under {job_budget:.2f}"
+            if median_fj is not None
+            else "no run in the window has job data",
         )
         stats += _sla_stat(
-            f"{last['mean_unexplained_failed_jobs']:.2f}",
+            f"{mean_un:.2f}" if mean_un is not None else "—",
             "failed jobs per run not explained by a tracked flake",
-            f"mean over the last {last['runs']} runs; a failed job is explained "
+            f"mean over {over}; a failed job is explained "
             "when every parsed failure in it matches a flakes.json entry. "
             f"{last['green_if_fixed_rate'] * 100:.0f}% of runs would have been "
             "green with the tracked flakes fixed",
@@ -1599,8 +1637,23 @@ def _render_sla_panel(data: Dict, ci_data: Dict | None = None) -> str:
             )
         )
     # (b) failed jobs per run with the unexplained line
+    # A run without job data (sync stores jobs only for failed runs) has an
+    # unknown failed-job count: draw it as a gap, not as an empty bar.
+    job_points = [
+        r
+        if r.get("failed_jobs_known", True)
+        else {
+            **r,
+            "failed_jobs": None,
+            "unexplained_failed_job_count": None,
+            "gap": "cancelled, no job data"
+            if r["status"] == "cancelled"
+            else "no job data",
+        }
+        for r in runs
+    ]
     jobs_chart = _sla_chart(
-        runs,
+        job_points,
         [
             {
                 "key": "failed_jobs",
@@ -1685,7 +1738,7 @@ def _render_sla_panel(data: Dict, ci_data: Dict | None = None) -> str:
     <summary>How these numbers are derived</summary>
     <div class="hint">
       <p>The cache records failures, not passes, so executions are derived: a test is assumed to run in every finished job (conclusion success or failure) whose name it has been seen failing in during the window. A test seen in one job out of thirty nightly runs has 30 executions. The 90% interval is the Beta posterior with a Jeffreys prior, the same model as the Regressions tab. Limits: a job where the test runs but never failed is not counted (the rate is overestimated), and a failed job whose log expired or did not parse adds an execution but no failure.</p>
-      <p>Rolling green rate = fully green runs among the last {ROLLING_LONG} scheduled runs. With independent job failures, P(run green) = exp(-mean failed jobs per run), so a {daily_target * 100:.0f}% target is a budget of {job_budget:.2f} failed jobs per run on average; the dashed line on the failed-jobs chart is that budget. The CI line uses settled push runs on unstable only: a run cancelled by a newer push never had a verdict.</p>
+      <p>Rolling green rate = fully green runs among the last {ROLLING_LONG} scheduled runs. With independent job failures, P(run green) = exp(-mean failed jobs per run), so a {daily_target * 100:.0f}% target is a budget of {job_budget:.2f} failed jobs per run on average; the dashed line on the failed-jobs chart is that budget. A night without job data (a cancelled run: job details are only fetched for failed runs) is drawn as a grey hatched column marked x; it counts as not green but is left out of the failed-jobs mean and median. The CI line uses settled push runs on unstable only: a run cancelled by a newer push never had a verdict.</p>
     </div>
   </details>
 </div>"""
