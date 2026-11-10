@@ -5,12 +5,12 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from valkey_oncall.cache import Cache
 from valkey_oncall.github_client import GitHubActionsClient
 from valkey_oncall.stats import regression_confidence
-from valkey_oncall.windowing import run_key, select_runs
+from valkey_oncall.windowing import run_event, run_key, select_runs
 
 logger = logging.getLogger(__name__)
 
@@ -30,25 +30,33 @@ def compute_blame(
     repo: str = "valkey-io/valkey",
     per_run: bool = False,
     max_runs: int = 50,
+    event: Optional[str] = None,
 ) -> List[Dict]:
     """For each test that has a green→red transition, identify blame candidates.
 
     Finds the last passing run before the first failure and uses the GitHub
     compare API to list commits between those two SHAs.
 
+    *event* selects the trigger event to keep (see
+    :func:`valkey_oncall.windowing.run_event`); the default keeps only the
+    nightly schedule for daily.yml and pushes for ci.yml.
+
     Returns a list of blame records sorted by recency (newest regressions first).
     """
     # Detection window: per-run keeps the last max_runs runs; per-day dedups
     # to one per day over the last `days` days.
+    ev = run_event(workflow, event)
     if per_run:
-        window_runs = cache.query_runs(repo=repo, workflow=workflow, branch=branch)
+        window_runs = cache.query_runs(
+            repo=repo, workflow=workflow, branch=branch, event=ev
+        )
         valid_runs = select_runs(window_runs, per_run=True)[-max_runs:]
     else:
         since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
             "%Y-%m-%dT00:00:00Z"
         )
         window_runs = cache.query_runs(
-            repo=repo, workflow=workflow, branch=branch, since=since
+            repo=repo, workflow=workflow, branch=branch, since=since, event=ev
         )
         valid_runs = select_runs(window_runs, per_run=False)
 
@@ -69,7 +77,7 @@ def compute_blame(
     # baseline: a test's flakiness BEFORE onset (not just within the detection
     # window). The windowed pre-onset is trivially clean -- onset IS the first
     # in-window failure -- so a known flake would look novel without this.
-    all_runs = cache.query_runs(repo=repo, workflow=workflow, branch=branch)
+    all_runs = cache.query_runs(repo=repo, workflow=workflow, branch=branch, event=ev)
     hist_valid = select_runs(all_runs, per_run=per_run)
     all_dates = [run_key(r, per_run) for r in hist_valid]
     hist_fail_dates: Dict[str, set] = defaultdict(set)

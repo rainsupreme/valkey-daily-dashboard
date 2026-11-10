@@ -30,7 +30,7 @@ from valkey_oncall.scorecard import (
 )
 from valkey_oncall.stats import regression_rate_lower_bound
 from valkey_oncall.weekly import source_run_id
-from valkey_oncall.windowing import run_key, select_runs
+from valkey_oncall.windowing import run_event, run_key, select_runs
 
 _ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 logger = logging.getLogger(__name__)
@@ -132,11 +132,18 @@ def generate_report_data(
     per_run: bool = False,
     max_runs: int = 50,
     registry=None,
+    event: str | None = None,
 ) -> Dict:
     """Build the data structure for the failure trend report.
 
     If *client* (a ``GitHubActionsClient``) is provided, the report will
     include the list of commits between consecutive runs.
+
+    *event* selects the trigger event to keep in every view (heatmap, run
+    details, scorecard, blame and reliability); see
+    :func:`valkey_oncall.windowing.run_event`. The default keeps only the
+    nightly ``schedule`` runs of daily.yml and the post-merge ``push`` runs of
+    ci.yml, so a hand-started daily.yml run never shows as a nightly.
 
     If *registry* (a ``FlakeRegistry``) is provided, each test carries a
     ``tracking`` list: the registry entries for that test, with whether the
@@ -147,15 +154,18 @@ def generate_report_data(
     the window is the last ``max_runs`` runs. Otherwise (Daily mode) runs are
     deduplicated to one per calendar day over the last ``days`` days.
     """
+    ev = run_event(workflow, event)
     if per_run:
-        all_runs = cache.query_runs(repo=repo, workflow=workflow, branch=branch)
+        all_runs = cache.query_runs(
+            repo=repo, workflow=workflow, branch=branch, event=ev
+        )
         runs = select_runs(all_runs, per_run=True)[-max_runs:]
     else:
         since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
             "%Y-%m-%dT00:00:00Z"
         )
         all_runs = cache.query_runs(
-            repo=repo, workflow=workflow, branch=branch, since=since
+            repo=repo, workflow=workflow, branch=branch, since=since, event=ev
         )
         runs = select_runs(all_runs, per_run=False)
 
@@ -306,7 +316,7 @@ def generate_report_data(
         "%Y-%m-%dT00:00:00Z"
     )
     lt_runs = cache.query_runs(
-        repo=repo, workflow=workflow, branch=branch, since=long_term_since
+        repo=repo, workflow=workflow, branch=branch, since=long_term_since, event=ev
     )
     lt_seen_dates: set[str] = set()
     for r in lt_runs:
@@ -372,6 +382,7 @@ def generate_report_data(
             repo=repo,
             per_run=per_run,
             max_runs=max_runs,
+            event=event,
         ),
         # Detected green->red regressions (blame). compute_blame is client-safe:
         # without commit-API access, blame_commits is empty but the transition
@@ -385,10 +396,12 @@ def generate_report_data(
             repo=repo,
             per_run=per_run,
             max_runs=max_runs,
+            event=event,
         ),
         # Reliability SLA inputs: run health with rolling green rates, per-
-        # execution flake rates and the over-budget count over time. Only
-        # scheduled (daily) or push (ci) runs count; see reliability.py.
+        # execution flake rates and the over-budget count over time. Same
+        # event filter as the views above, so every series ends on the same
+        # latest run; see reliability.py.
         "reliability": compute_reliability(
             cache,
             registry,
@@ -396,6 +409,7 @@ def generate_report_data(
             branch=branch,
             workflow=workflow,
             repo=repo,
+            event=event,
         ),
     }
 

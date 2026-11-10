@@ -152,6 +152,34 @@ class Cache:
         ).fetchone()
         return row is not None
 
+    def get_run_status(self, run_id: int) -> Optional[str]:
+        """Return the cached status of *run_id*, or None if not cached."""
+        row = self._conn.execute(
+            "SELECT status FROM workflow_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        return row["status"] if row else None
+
+    def update_run(self, run: Dict) -> None:
+        """Overwrite the status, duration and payload of an already cached run.
+
+        Used when a run was first cached before it finished: ``store_runs``
+        never touches existing rows, so without this a run seen while
+        ``in_progress`` would keep that status forever and stay hidden from
+        every view.
+        """
+        self._conn.execute(
+            """UPDATE workflow_runs
+               SET status = :status, duration_secs = :duration_secs, raw_json = :raw_json
+               WHERE run_id = :run_id""",
+            {
+                "run_id": run["run_id"],
+                "status": run["status"],
+                "duration_secs": run.get("duration_secs"),
+                "raw_json": run.get("raw_json", json.dumps(run)),
+            },
+        )
+        self._conn.commit()
+
     def store_runs(self, runs: List[Dict]) -> None:
         self._conn.executemany(
             """INSERT OR IGNORE INTO workflow_runs

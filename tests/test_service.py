@@ -14,7 +14,10 @@ from valkey_oncall.service import OnCallService, _map_job, _map_run
 
 
 def _api_run(
-    run_id: int, conclusion: str = "failure", branch: str = "unstable"
+    run_id: int,
+    conclusion: str = "failure",
+    branch: str = "unstable",
+    event: str = "schedule",
 ) -> Dict:
     """Return a dict resembling a GitHub API workflow-run object."""
     return {
@@ -23,6 +26,7 @@ def _api_run(
         "name": "daily.yml",
         "conclusion": conclusion,
         "status": "completed",
+        "event": event,
         "head_branch": branch,
         "head_sha": f"sha_{run_id}",
         "run_started_at": "2024-01-15T08:00:00Z",
@@ -213,14 +217,15 @@ class TestSyncOrchestration:
             for c in client.get_workflow_runs.call_args_list
         }
         assert fetched == {"daily.yml", "weekly.yml", "ci.yml"}
-        # CI is fetched with the post-merge (push) event filter; the others
-        # are unfiltered (all events).
+        # CI is fetched with the post-merge (push) event filter and daily
+        # with the nightly schedule; weekly is unfiltered (all events).
         events = {
             c.kwargs.get("workflow_file"): c.kwargs.get("event")
             for c in client.get_workflow_runs.call_args_list
         }
         assert events["ci.yml"] == "push"
-        assert events["daily.yml"] is None
+        assert events["daily.yml"] == "schedule"
+        assert events["weekly.yml"] is None
         assert summary["new_runs_fetched"] == 0
         assert summary["errors"] == []
 
@@ -481,3 +486,58 @@ class TestSyncAuthFailure:
         summary = svc.sync(workflow="daily")
 
         assert summary["auth_failed"] is False
+
+
+class TestSyncRefreshesUnsettledRuns:
+    """A run first cached while still running gets its final status later.
+
+    Root cause of a missing nightly: a sync ran while the nightly was in
+    progress and stored it with status in_progress; store_runs never
+    updates existing rows, so the run kept that status forever and every
+    view (which drops unsettled statuses) hid it.
+    """
+
+    def _running(self, run_id: int) -> Dict:
+        raw = _api_run(run_id, conclusion=None)
+        raw["status"] = "in_progress"
+        return raw
+
+    def test_in_progress_run_is_refreshed_and_processed(
+        self, temp_db_path: str
+    ) -> None:
+        cache = Cache(temp_db_path)
+        client = MagicMock(repo="valkey-io/valkey")
+        client.get_workflow_runs.return_value = [self._running(1)]
+        client.get_jobs_for_run.return_value = [_api_job(10, "failure")]
+        client.get_job_log.return_value = "[err]: boom in tests/unit/a.tcl\n"
+        svc = OnCallService(client, cache)
+
+        svc.sync(workflow="daily")
+        assert cache.get_run_status(1) == "in_progress"
+        assert cache.query_runs(workflow="daily.yml", status="failure") == []
+        client.get_jobs_for_run.assert_not_called()
+
+        client.get_workflow_runs.return_value = [_api_run(1, "failure")]
+        summary = svc.sync(workflow="daily")
+
+        assert summary["new_runs_fetched"] == 0
+        assert summary["runs_refreshed"] == 1
+        assert cache.get_run_status(1) == "failure"
+        client.get_jobs_for_run.assert_called_once_with(1)
+        assert cache.has_log(10)
+
+    def test_settled_run_is_never_rewritten(self, temp_db_path: str) -> None:
+        cache = Cache(temp_db_path)
+        cache.store_runs([_map_run(_api_run(1, "failure"), "valkey-io/valkey")])
+        client = MagicMock(repo="valkey-io/valkey")
+        client.get_workflow_runs.return_value = [_api_run(1, "success")]
+        summary = OnCallService(client, cache).sync(workflow="daily")
+
+        assert summary["runs_refreshed"] == 0
+        assert cache.get_run_status(1) == "failure"
+
+    def test_daily_sync_requests_schedule_runs_only(self, temp_db_path: str) -> None:
+        client = MagicMock(repo="valkey-io/valkey")
+        client.get_workflow_runs.return_value = []
+        OnCallService(client, Cache(temp_db_path)).sync(workflow="daily")
+        assert client.get_workflow_runs.call_args.kwargs["event"] == "schedule"
