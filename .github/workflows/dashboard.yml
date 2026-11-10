@@ -63,14 +63,18 @@ jobs:
           # Export raw report data as JSON for machine consumption
           python3 -c "
           from valkey_oncall.cache import Cache; from valkey_oncall.report import generate_report_data, stale_reason
+          from valkey_oncall.flakes import FlakeRegistry
           from valkey_oncall.releases import generate_releases_data
           import json, sys; from pathlib import Path
           cache = Cache(str(Path('~/.valkey-oncall/cache.db').expanduser()))
-          data = generate_report_data(cache, days=30, branch='unstable', workflow='daily.yml')
+          # The registry feeds the tracking column and the Reliability SLA
+          # block (failed jobs explained by a tracked flake).
+          registry = FlakeRegistry.load('flakes.json')
+          data = generate_report_data(cache, days=30, branch='unstable', workflow='daily.yml', registry=registry)
           Path('_site/report.json').write_text(json.dumps(data, indent=2))
           # CI (per-commit) machine export. Staleness is warn-only: merges are
           # bursty (quiet weekends are normal), so it must not gate the deploy.
-          ci = generate_report_data(cache, branch='unstable', workflow='ci.yml', per_run=True)
+          ci = generate_report_data(cache, branch='unstable', workflow='ci.yml', per_run=True, registry=registry)
           Path('_site/report-ci.json').write_text(json.dumps(ci, indent=2))
           ci_reason = stale_reason(ci['summary'].get('latest_run_date'))
           if ci_reason:

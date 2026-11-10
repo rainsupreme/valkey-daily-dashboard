@@ -182,7 +182,15 @@ class Cache:
         branch: Optional[str] = None,
         since: Optional[str] = None,
         until: Optional[str] = None,
+        event: Optional[str] = None,
     ) -> List[Dict]:
+        """Cached runs, newest first.
+
+        *event* keeps only runs whose GitHub trigger event (``schedule``,
+        ``push``, ``workflow_dispatch``, ...) matches. The event lives in
+        the stored API payload, not in a column, so it is read in Python
+        from the rows the SQL filters already selected.
+        """
         clauses: List[str] = []
         params: List[object] = []
         if repo is not None:
@@ -205,13 +213,25 @@ class Cache:
             params.append(until)
 
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        cols = "run_id, repo, workflow_file, status, branch, commit_sha, run_date, duration_secs"
+        if event is not None:
+            cols += ", raw_json"
         sql = (
-            "SELECT run_id, repo, workflow_file, status, branch, commit_sha, run_date, duration_secs FROM workflow_runs"
-            + where
-            + " ORDER BY run_date DESC"
+            "SELECT " + cols + " FROM workflow_runs" + where + " ORDER BY run_date DESC"
         )
         rows = self._conn.execute(sql, params).fetchall()
-        return [dict(row) for row in rows]
+        if event is None:
+            return [dict(row) for row in rows]
+        out: List[Dict] = []
+        for row in rows:
+            d = dict(row)
+            try:
+                run_event = json.loads(d.pop("raw_json") or "{}").get("event")
+            except json.JSONDecodeError:
+                run_event = None
+            if run_event == event:
+                out.append(d)
+        return out
 
     # ------------------------------------------------------------------
     # Jobs

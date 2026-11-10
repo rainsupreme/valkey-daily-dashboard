@@ -55,7 +55,8 @@
     });
 })();
 
-// Tab switching (Heatmap / Scorecard / Run Details / Regressions).
+// Tab switching (Heatmap / Reliability SLA / Regressions / Run Details /
+// Scorecard).
 // The active tab is encoded in the URL hash (e.g. #regressions) so it is
 // deep-linkable and survives reload / back-forward navigation.
 (function () {

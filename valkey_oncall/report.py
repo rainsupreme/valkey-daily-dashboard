@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+import math
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -15,6 +16,12 @@ from valkey_oncall.blame import REGRESSION_ONGOING_QUIET_RUNS, compute_blame
 from valkey_oncall.cache import Cache
 from valkey_oncall.flakes import tracking_for_test
 from valkey_oncall.log_parser import sanitize_cached_failure
+from valkey_oncall.reliability import (
+    FLAKE_RATE_BUDGET,
+    RATE_WINDOW_DAYS,
+    ROLLING_LONG,
+    compute_reliability,
+)
 from valkey_oncall.scorecard import (
     COOLING_QUIET_RUNS,
     PERSISTENT_STREAK_DAYS,
@@ -378,6 +385,17 @@ def generate_report_data(
             repo=repo,
             per_run=per_run,
             max_runs=max_runs,
+        ),
+        # Reliability SLA inputs: run health with rolling green rates, per-
+        # execution flake rates and the over-budget count over time. Only
+        # scheduled (daily) or push (ci) runs count; see reliability.py.
+        "reliability": compute_reliability(
+            cache,
+            registry,
+            days=90,
+            branch=branch,
+            workflow=workflow,
+            repo=repo,
         ),
     }
 
@@ -843,6 +861,7 @@ def render_html(
         unique_tests=summary["unique_tests_failed"],
         generated=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         heatmap_body=heatmap_body,
+        sla_panel=_render_sla_panel(data, ci_data),
         releases_strip=releases_strip,
         ci_scorecard=ci_scorecard,
         ci_regressions=ci_regressions,
@@ -1356,6 +1375,375 @@ def _render_fixed_regressions(
     )
 
 
+def _sla_chart(
+    points: List[Dict],
+    series: List[Dict],
+    target: float | None = None,
+    ymax: float | None = None,
+    percent: bool = False,
+    width: int = 720,
+    height: int = 150,
+) -> str:
+    """Inline SVG time chart for the Reliability SLA tab.
+
+    *points* are dicts with a ``date`` and the keys named by *series*, oldest
+    first; one x position per point. Each series is ``{"key", "label",
+    "color", "kind"}`` with kind ``line`` or ``bars``. A dashed *target*
+    line is drawn when given. A point with a ``gap`` string (for example
+    "cancelled, no job data") has no value: it is drawn as a grey hatched
+    column with an "x" and the string in its tooltip, so it does not read
+    as a zero. Every point carries a ``<title>`` tooltip, so the chart
+    needs no script and no network.
+    """
+    if not points:
+        return '<p class="no-commits">no runs in the window</p>'
+    pad_l, pad_r, pad_t, pad_b = 36, 8, 8, 18
+    plot_w = width - pad_l - pad_r
+    plot_h = height - pad_t - pad_b
+    n = len(points)
+    values = [
+        p.get(s["key"]) for p in points for s in series if p.get(s["key"]) is not None
+    ]
+    top = ymax if ymax is not None else max(values + [target or 0.0] + [0.0])
+    if top <= 0:
+        top = 1.0
+    step = plot_w / n
+    bw = max(1.0, step * 0.7)
+
+    def x_at(i: int) -> float:
+        return pad_l + i * step + step / 2
+
+    def y_at(v: float) -> float:
+        return pad_t + plot_h - (min(v, top) / top) * plot_h
+
+    def fmt(v) -> str:
+        if v is None:
+            return "n/a"
+        if percent:
+            return f"{v * 100:.0f}%"
+        # At most 2 decimals, trailing zeros dropped: 0.693147 -> 0.69, 12.0 -> 12.
+        return f"{v:.2f}".rstrip("0").rstrip(".")
+
+    out: List[str] = []
+    gaps = [i for i, p in enumerate(points) if p.get("gap")]
+    if gaps:
+        # shortcut: a fixed pattern id; fine while only one chart per page has
+        # gaps (same definition either way), make it unique if that changes.
+        out.append(
+            '<defs><pattern id="sla-hatch" width="4" height="4" '
+            'patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'
+            '<rect width="2" height="4" fill="#8b949e" opacity="0.35"/>'
+            "</pattern></defs>"
+        )
+    for i in gaps:
+        out.append(
+            f'<rect class="sla-gap" x="{x_at(i) - bw / 2:.1f}" y="{pad_t}" '
+            f'width="{bw:.1f}" height="{plot_h}"/>'
+            f'<text class="sla-gap-mark" x="{x_at(i):.1f}" '
+            f'y="{pad_t + plot_h - 2:.1f}">x</text>'
+        )
+    # Axis labels: zero, top, and the target.
+    out.append(
+        f'<text x="{pad_l - 4}" y="{pad_t + plot_h}" class="sla-axis">{fmt(0.0)}</text>'
+        f'<text x="{pad_l - 4}" y="{pad_t + 8}" class="sla-axis">{fmt(top)}</text>'
+    )
+    out.append(
+        f'<line x1="{pad_l}" y1="{pad_t + plot_h:.1f}" x2="{width - pad_r}" '
+        f'y2="{pad_t + plot_h:.1f}" class="sla-base"/>'
+    )
+    if target is not None:
+        ty = y_at(target)
+        out.append(
+            f'<line x1="{pad_l}" y1="{ty:.1f}" x2="{width - pad_r}" y2="{ty:.1f}" '
+            f'class="sla-target"><title>target {fmt(target)}</title></line>'
+            f'<text x="{width - pad_r}" y="{ty - 3:.1f}" class="sla-axis sla-target-label">'
+            f"target {fmt(target)}</text>"
+        )
+    for s in series:
+        key = s["key"]
+        if s.get("kind") == "bars":
+            for i, p in enumerate(points):
+                v = p.get(key)
+                if v is None:
+                    continue
+                y = y_at(v)
+                out.append(
+                    f'<rect x="{x_at(i) - bw / 2:.1f}" y="{y:.1f}" width="{bw:.1f}" '
+                    f'height="{max(pad_t + plot_h - y, 0.0):.1f}" fill="{s["color"]}" '
+                    f'opacity="0.75"/>'
+                )
+        else:
+            pts = [
+                f"{x_at(i):.1f},{y_at(p[key]):.1f}"
+                for i, p in enumerate(points)
+                if p.get(key) is not None
+            ]
+            if pts:
+                out.append(
+                    f'<polyline points="{" ".join(pts)}" fill="none" '
+                    f'stroke="{s["color"]}" stroke-width="1.5"/>'
+                )
+    # Tooltip hit areas, one per point (drawn last so they sit on top).
+    for i, p in enumerate(points):
+        if p.get("gap"):
+            parts = [p["date"], p["gap"]]
+        else:
+            parts = [p["date"]] + [
+                f"{s['label']}: {fmt(p.get(s['key']))}"
+                + (f" ({p['runs']} runs)" if s.get("show_runs") and "runs" in p else "")
+                for s in series
+            ]
+        out.append(
+            f'<rect x="{pad_l + i * step:.1f}" y="{pad_t}" width="{step:.1f}" '
+            f'height="{plot_h}" fill="transparent">'
+            f"<title>{html.escape(' · '.join(parts))}</title></rect>"
+        )
+    out.append(
+        f'<text x="{pad_l}" y="{height - 4}" class="sla-axis sla-date">'
+        f"{html.escape(points[0]['date'])}</text>"
+        f'<text x="{width - pad_r}" y="{height - 4}" class="sla-axis sla-date sla-end">'
+        f"{html.escape(points[-1]['date'])}</text>"
+    )
+    legend = " ".join(
+        f'<span class="sla-key"><i style="background:{s["color"]}"></i>{html.escape(s["label"])}</span>'
+        for s in series
+    )
+    if gaps:
+        legend += ' <span class="sla-key"><i class="sla-key-gap"></i>no job data</span>'
+    return (
+        f'<svg class="sla-chart" viewBox="0 0 {width} {height}" '
+        f'preserveAspectRatio="none" role="img">{"".join(out)}</svg>'
+        f'<div class="sla-legend">{legend}</div>'
+    )
+
+
+def _sla_stat(value: str, label: str, title: str = "") -> str:
+    ttl = f' title="{html.escape(title)}"' if title else ""
+    return (
+        f'<div class="stat"{ttl}><div class="stat-val">{value}</div>'
+        f'<div class="stat-label">{html.escape(label)}</div></div>'
+    )
+
+
+def _render_sla_panel(data: Dict, ci_data: Dict | None = None) -> str:
+    """Body of the Reliability SLA tab (Daily first, CI push rate beside it)."""
+    rel = data.get("reliability") or {}
+    health = rel.get("run_health") or {}
+    rates = rel.get("flake_rates") or {}
+    targets = rel.get("targets") or {}
+    runs = health.get("runs", [])
+    roll30 = health.get("rolling30", [])
+    last = roll30[-1] if roll30 else None
+    repo = data.get("summary", {}).get("repo", "valkey-io/valkey")
+    daily_target = targets.get("green_rate") or 0.5
+    # P(run green) = exp(-mean failed jobs) when job failures are independent,
+    # so the green-rate target is also a budget on the mean.
+    job_budget = -math.log(daily_target)
+
+    ci_rel = (ci_data or {}).get("reliability") or {}
+    ci_roll = (ci_rel.get("run_health") or {}).get("rolling30", [])
+    ci_last = ci_roll[-1] if ci_roll else None
+    ci_target = (ci_rel.get("targets") or {}).get("green_rate") or 0.95
+
+    stats = ""
+    if last:
+        stats += _sla_stat(
+            f"{last['green_runs']} / {last['runs']}",
+            f"fully green nightly runs · target {daily_target * 100:.0f}%",
+            f"last {last['runs']} scheduled daily.yml runs, to {last['date']}",
+        )
+        n_known = last.get("job_data_runs", last["runs"])
+        over = (
+            f"the {n_known} of the last {last['runs']} runs with job data"
+            if n_known != last["runs"]
+            else f"the last {last['runs']} runs"
+        )
+        mean_fj = last["mean_failed_jobs"]
+        mean_un = last["mean_unexplained_failed_jobs"]
+        median_fj = last["median_failed_jobs"]
+        stats += _sla_stat(
+            f"{mean_fj:.2f}" if mean_fj is not None else "—",
+            f"failed jobs per nightly run · budget {job_budget:.2f}",
+            f"mean over {over} (median {median_fj:g}); P(green) = exp(-mean), so "
+            f"{daily_target * 100:.0f}% green needs a mean under {job_budget:.2f}"
+            if median_fj is not None
+            else "no run in the window has job data",
+        )
+        stats += _sla_stat(
+            f"{mean_un:.2f}" if mean_un is not None else "—",
+            "failed jobs per run not explained by a tracked flake",
+            f"mean over {over}; a failed job is explained "
+            "when every parsed failure in it matches a flakes.json entry. "
+            f"{last['green_if_fixed_rate'] * 100:.0f}% of runs would have been "
+            "green with the tracked flakes fixed",
+        )
+    else:
+        stats += _sla_stat("—", "no scheduled nightly runs in the window")
+    if ci_last:
+        stats += _sla_stat(
+            f"{ci_last['green_rate'] * 100:.0f}%",
+            f"CI push runs fully green · target {ci_target * 100:.0f}%",
+            f"{ci_last['green_runs']} of the last {ci_last['runs']} settled ci.yml "
+            f"push runs on unstable, to {ci_last['date']}; mean failed jobs "
+            f"{ci_last['mean_failed_jobs']:.2f}",
+        )
+    tests = rates.get("tests", [])
+    if tests:
+        n_over = rates.get("tests_over_budget", 0)
+        n_conf = rates.get("tests_over_budget_confident", 0)
+        n_tracked = rates.get("tests_tracked", 0)
+        stats += _sla_stat(
+            f'{n_conf} <span class="sla-dim">/ {n_over}</span>',
+            f"tests over {FLAKE_RATE_BUDGET * 100:.0f}% per execution · target 0",
+            f"of {len(tests)} tests that failed in the last {RATE_WINDOW_DAYS} "
+            f"days: {n_conf} with the whole 90% interval above the budget, "
+            f"{n_over} by point estimate (one failure in 30 executions is "
+            "already 3%)",
+        )
+        stats += _sla_stat(
+            f"{n_tracked} / {len(tests)}",
+            "failing tests with a tracking issue or PR · target all",
+            "a test is tracked when one of its failure modes seen in the window "
+            "matches a flakes.json entry exactly",
+        )
+
+    # (a) rolling green rate, daily and ci
+    green_series = [
+        {
+            "key": "green_rate",
+            "label": "fully green (rolling 30 runs)",
+            "color": "#3fb950",
+            "show_runs": True,
+        },
+        {
+            "key": "green_if_fixed_rate",
+            "label": "green if tracked flakes were fixed",
+            "color": "#58a6ff",
+        },
+    ]
+    daily_green = _sla_chart(
+        roll30, green_series, target=daily_target, ymax=1.0, percent=True
+    )
+    ci_green = ""
+    if ci_data is not None:
+        ci_green = (
+            '<h3 class="wf-title">CI · push runs fully green, rolling 30 runs</h3>'
+            + _sla_chart(
+                ci_roll,
+                [green_series[0]],
+                target=ci_target,
+                ymax=1.0,
+                percent=True,
+            )
+        )
+    # (b) failed jobs per run with the unexplained line
+    # A run without job data (sync stores jobs only for failed runs) has an
+    # unknown failed-job count: draw it as a gap, not as an empty bar.
+    job_points = [
+        r
+        if r.get("failed_jobs_known", True)
+        else {
+            **r,
+            "failed_jobs": None,
+            "unexplained_failed_job_count": None,
+            "gap": "cancelled, no job data"
+            if r["status"] == "cancelled"
+            else "no job data",
+        }
+        for r in runs
+    ]
+    jobs_chart = _sla_chart(
+        job_points,
+        [
+            {
+                "key": "failed_jobs",
+                "label": "failed jobs",
+                "color": "#da3633",
+                "kind": "bars",
+            },
+            {
+                "key": "unexplained_failed_job_count",
+                "label": "not explained by a tracked flake",
+                "color": "#d29922",
+            },
+        ],
+        target=job_budget,
+    )
+    # (c) tests over budget over time
+    budget_chart = _sla_chart(
+        rel.get("over_budget_series", []),
+        [
+            {
+                "key": "tests_over_budget",
+                "label": f"tests over {FLAKE_RATE_BUDGET * 100:.0f}% (point estimate)",
+                "color": "#8b949e",
+            },
+            {
+                "key": "tests_over_budget_confident",
+                "label": "whole 90% interval over budget",
+                "color": "#f85149",
+            },
+            {"key": "failing_tests", "label": "tests that failed", "color": "#30363d"},
+        ],
+    )
+    # (d) untracked failing tests, worst first
+    untracked = [t for t in tests if not t["tracked"]]
+    rows = ""
+    for t in untracked[:20]:
+        lo, hi = t["rate_ci90"]
+        rate = f"{t['rate'] * 100:.1f}%" if t["rate"] is not None else "—"
+        jobs = ", ".join(j["job_name"] for j in t["jobs"][:3])
+        if len(t["jobs"]) > 3:
+            jobs += f" +{len(t['jobs']) - 3}"
+        rows += (
+            f'<tr><td class="test-name" title="{html.escape(t["test_name"])}">'
+            f"{html.escape(_short_test_name(t['test_name']))}</td>"
+            f'<td class="freq">{t["fails"]}/{t["executions"]}</td>'
+            f'<td class="freq" title="90% credible interval {lo * 100:.1f}%–{hi * 100:.1f}%">{rate}</td>'
+            f'<td class="freq">{html.escape(jobs)}</td>'
+            f'<td class="freq">{t["last_failure"]}</td></tr>'
+        )
+    more = (
+        f'<p class="hint">+{len(untracked) - 20} more untracked tests in report.json</p>'
+        if len(untracked) > 20
+        else ""
+    )
+    untracked_table = (
+        '<table class="scorecard-table"><thead><tr><th>Test</th>'
+        '<th title="failures / executions in the window">Fails</th>'
+        '<th title="fails / executions; hover for the 90% interval">Rate</th>'
+        "<th>Jobs</th><th>Last failed</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table>{more}"
+        if untracked
+        else '<p class="no-commits">Every failing test has a registry entry.</p>'
+    )
+    reg_link = f"https://github.com/{repo}/issues"
+    return f"""<div class="section">
+  <h2>Reliability SLA</h2>
+  <p class="hint">Where the <b>daily.yml</b> nightly run stands against the goal of a mostly green week, and what is in the way.
+    Only scheduled nightly runs count (hand-started runs are left out); a cancelled night counts as not green.
+    <b>Per-execution rate</b> = failures / finished runs of the jobs in which the test has been seen failing in the last {RATE_WINDOW_DAYS} days (see <i>How these numbers are derived</i>).
+    A failed job is <b>explained</b> when every parsed failure in it matches a <a href="{reg_link}" target="_blank" rel="noopener noreferrer">tracked</a> entry in flakes.json.</p>
+  <div class="stats sla-stats">{stats}</div>
+  <h3 class="wf-title">Daily · fully green nightly runs, rolling {ROLLING_LONG} runs</h3>
+  {daily_green}
+  {ci_green}
+  <h3 class="wf-title">Daily · failed jobs per nightly run</h3>
+  {jobs_chart}
+  <h3 class="wf-title">Daily · tests over the {FLAKE_RATE_BUDGET * 100:.0f}% per-execution budget ({RATE_WINDOW_DAYS}-day window ending each run)</h3>
+  {budget_chart}
+  <h3 class="wf-title">Daily · failing tests without a tracking issue or PR (last {RATE_WINDOW_DAYS} days, worst first)</h3>
+  {untracked_table}
+  <details class="methodology">
+    <summary>How these numbers are derived</summary>
+    <div class="hint">
+      <p>The cache records failures, not passes, so executions are derived: a test is assumed to run in every finished job (conclusion success or failure) whose name it has been seen failing in during the window. A test seen in one job out of thirty nightly runs has 30 executions. The 90% interval is the Beta posterior with a Jeffreys prior, the same model as the Regressions tab. Limits: a job where the test runs but never failed is not counted (the rate is overestimated), and a failed job whose log expired or did not parse adds an execution but no failure.</p>
+      <p>Rolling green rate = fully green runs among the last {ROLLING_LONG} scheduled runs. With independent job failures, P(run green) = exp(-mean failed jobs per run), so a {daily_target * 100:.0f}% target is a budget of {job_budget:.2f} failed jobs per run on average; the dashed line on the failed-jobs chart is that budget. A night without job data (a cancelled run: job details are only fetched for failed runs) is drawn as a grey hatched column marked x; it counts as not green but is left out of the failed-jobs mean and median. The CI line uses settled push runs on unstable only: a run cancelled by a newer push never had a verdict.</p>
+    </div>
+  </details>
+</div>"""
+
+
 _HTML_TEMPLATE = """\
 <!DOCTYPE html>
 <html lang="en">
@@ -1380,6 +1768,7 @@ ${releases_strip}
 
 <div class="tabs" role="tablist">
   <button class="tab active" data-tab="heatmap" role="tab">Heatmap</button>
+  <button class="tab" data-tab="sla" role="tab">Reliability SLA</button>
   <button class="tab" data-tab="regressions" role="tab">Regressions</button>
   <button class="tab" data-tab="rundetails" role="tab">Run Details</button>
   <button class="tab" data-tab="scorecard" role="tab">Flakiness Scorecard</button>
@@ -1394,6 +1783,10 @@ ${heatmap_body}
       <p>We model the test's failure rate <i>since onset</i> as a <a href="https://en.wikipedia.org/wiki/Beta_distribution" target="_blank" rel="noopener noreferrer">Beta</a> posterior (the <a href="https://en.wikipedia.org/wiki/Conjugate_prior" target="_blank" rel="noopener noreferrer">conjugate prior</a> for a pass/fail rate, seeded with a weak <a href="https://en.wikipedia.org/wiki/Jeffreys_prior" target="_blank" rel="noopener noreferrer">Jeffreys prior</a>) and take the lower bound of its <a href="https://en.wikipedia.org/wiki/Credible_interval" target="_blank" rel="noopener noreferrer">${warn_ci} credible interval</a>. The ⚠️ appears only when that bound is at least <b>${warn_rate}</b> — i.e. we are ${warn_ci} confident the test now fails at least ${warn_rate} of runs — and it has failed at least <b>${warn_min_fails}</b> times. The credible interval naturally requires enough evidence: a tiny sample yields a wide posterior whose lower bound stays low, so weak signals don't flag until they earn it.</p>
     </div>
   </details>
+</div>
+
+<div class="tab-panel" id="tab-sla" role="tabpanel">
+${sla_panel}
 </div>
 
 <div class="tab-panel" id="tab-scorecard" role="tabpanel">
