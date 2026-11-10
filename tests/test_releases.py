@@ -148,7 +148,7 @@ class TestDiscoverBranches:
 class TestGenerateReleasesData:
     def test_summary_rows_match_job_conclusions(self, temp_db_path: str) -> None:
         cache = _seed(temp_db_path)
-        data = generate_releases_data(cache)
+        data = generate_releases_data(cache, days=SEED_WINDOW_DAYS)
         rows = {r["branch"]: r for r in data["summary_rows"]}
 
         r80 = rows["8.0"]
@@ -166,7 +166,7 @@ class TestGenerateReleasesData:
 
     def test_per_branch_reports_are_weekly_columns(self, temp_db_path: str) -> None:
         cache = _seed(temp_db_path)
-        data = generate_releases_data(cache)
+        data = generate_releases_data(cache, days=SEED_WINDOW_DAYS)
         d = data["per_branch"]["8.0"]
         assert d["dates"] == ["2026-07-05", "2026-07-12"]
         assert [c["label"] for c in d["columns"]] == ["7/5", "7/12"]
@@ -178,13 +178,13 @@ class TestGenerateReleasesData:
 
     def test_overall_summary(self, temp_db_path: str) -> None:
         cache = _seed(temp_db_path)
-        data = generate_releases_data(cache)
+        data = generate_releases_data(cache, days=SEED_WINDOW_DAYS)
         assert data["branches"] == ["9.0", "8.0"]
         assert data["summary"]["branch_count"] == 2
         assert data["summary"]["latest_week"] == "2026-07-12"
 
     def test_empty_cache_yields_empty_dataset(self, temp_db_path: str) -> None:
-        data = generate_releases_data(Cache(temp_db_path))
+        data = generate_releases_data(Cache(temp_db_path), days=SEED_WINDOW_DAYS)
         assert data["branches"] == []
         assert data["summary_rows"] == []
         assert data["summary"]["latest_week"] is None
@@ -242,7 +242,7 @@ class TestSanitizeStripsFanoutPrefix:
                 }
             ],
         )
-        data = generate_releases_data(cache)
+        data = generate_releases_data(cache, days=SEED_WINDOW_DAYS)
         tests = data["per_branch"]["8.1"]["tests"]
         assert list(tests) == ["test-x: unattributed failure"]
         timeline = tests["test-x: unattributed failure"]["timeline"]
@@ -257,7 +257,7 @@ class TestReleaseStrip:
         from valkey_oncall.releases import render_release_strip
 
         cache = _seed(temp_db_path)
-        rows = generate_releases_data(cache)["summary_rows"]
+        rows = generate_releases_data(cache, days=SEED_WINDOW_DAYS)["summary_rows"]
         strip = render_release_strip(rows)
         assert 'href="releases.html#branch-9.0"' in strip
         assert 'href="releases.html#branch-8.0"' in strip
@@ -276,7 +276,7 @@ class TestReleaseStrip:
         from valkey_oncall.report import generate_report_data, render_html
 
         cache = _seed(temp_db_path)
-        rows = generate_releases_data(cache)["summary_rows"]
+        rows = generate_releases_data(cache, days=SEED_WINDOW_DAYS)["summary_rows"]
         idx = render_html(
             generate_report_data(
                 cache,
@@ -367,7 +367,7 @@ class TestReleasesTabs:
         from valkey_oncall.releases import render_releases_html
 
         cache = _seed(temp_db_path)
-        h = render_releases_html(generate_releases_data(cache))
+        h = render_releases_html(generate_releases_data(cache, days=SEED_WINDOW_DAYS))
         assert h.count('class="tab-panel') == 4
         assert re.search(r'<div class="tab-panel active" id="tab-heatmap"', h)
         for t in ("heatmap", "regressions", "rundetails", "scorecard"):
@@ -381,7 +381,7 @@ class TestReleasesTabs:
         from valkey_oncall.releases import render_releases_html
 
         cache = _seed(temp_db_path)
-        h = render_releases_html(generate_releases_data(cache))
+        h = render_releases_html(generate_releases_data(cache, days=SEED_WINDOW_DAYS))
         reg = h.split('id="tab-regressions"')[1].split('id="tab-rundetails"')[0]
         sc = h.split('id="tab-scorecard"')[1]
         # One wf-title per branch in each panel (9.0 + 8.0 seeded)
@@ -400,7 +400,7 @@ class TestRunDetailsTab:
         from valkey_oncall.releases import render_releases_html
 
         cache = _seed(temp_db_path)
-        h = render_releases_html(generate_releases_data(cache))
+        h = render_releases_html(generate_releases_data(cache, days=SEED_WINDOW_DAYS))
         panel = h.split('id="tab-rundetails"')[1].split('id="tab-scorecard"')[0]
 
         # One table per branch, stub gone
@@ -427,7 +427,9 @@ class TestRenderReleasesHtml:
         from valkey_oncall.releases import render_releases_html
 
         cache = _seed(temp_db_path)
-        html_out = render_releases_html(generate_releases_data(cache))
+        html_out = render_releases_html(
+            generate_releases_data(cache, days=SEED_WINDOW_DAYS)
+        )
 
         # Balanced structural tags
         for tag in ("table", "details", "thead", "tbody", "tr"):
@@ -478,7 +480,9 @@ class TestRenderReleasesHtml:
     def test_empty_dataset_renders(self, temp_db_path: str) -> None:
         from valkey_oncall.releases import render_releases_html
 
-        html_out = render_releases_html(generate_releases_data(Cache(temp_db_path)))
+        html_out = render_releases_html(
+            generate_releases_data(Cache(temp_db_path), days=SEED_WINDOW_DAYS)
+        )
         assert "Valkey Release Branch Health" in html_out
         assert "no data yet" in html_out
 
