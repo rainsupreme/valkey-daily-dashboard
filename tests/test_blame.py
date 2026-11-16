@@ -1,5 +1,6 @@
 """Tests for the blame module."""
 
+import json
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
@@ -43,7 +44,7 @@ def mock_client():
     return client
 
 
-def _make_run(run_id, date_str, status="failure", sha=None):
+def _make_run(run_id, date_str, status="failure", sha=None, event="schedule"):
     return {
         "run_id": run_id,
         "repo": "valkey-io/valkey",
@@ -52,6 +53,7 @@ def _make_run(run_id, date_str, status="failure", sha=None):
         "branch": "unstable",
         "commit_sha": sha or f"sha{run_id}",
         "run_date": f"{date_str}T06:00:00Z",
+        "raw_json": json.dumps({"event": event}),
     }
 
 

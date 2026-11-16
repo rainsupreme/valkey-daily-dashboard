@@ -38,7 +38,7 @@ def _seed(cache: Cache, run_id: int, day: str, failures, branch="unstable") -> N
                 "branch": branch,
                 "commit_sha": f"sha{run_id}",
                 "run_date": f"{day}T06:00:00Z",
-                "raw_json": "{}",
+                "raw_json": '{"event": "schedule"}',
             }
         ]
     )

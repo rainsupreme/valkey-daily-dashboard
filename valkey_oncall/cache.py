@@ -152,29 +152,31 @@ class Cache:
         ).fetchone()
         return row is not None
 
-    def update_runs(self, runs: List[Dict]) -> None:
-        """Overwrite the stored state of runs already present.
+    def get_run_status(self, run_id: int) -> Optional[str]:
+        """Return the cached status of *run_id*, or None if not cached."""
+        row = self._conn.execute(
+            "SELECT status FROM workflow_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        return row["status"] if row else None
 
-        Used for a run first stored while it was still in progress: its
-        conclusion, end time and duration arrive on a later listing. Rows
-        for unknown run ids are left alone; ``store_runs`` adds those.
+    def update_run(self, run: Dict) -> None:
+        """Overwrite the status, duration and payload of an already cached run.
+
+        Used when a run was first cached before it finished: ``store_runs``
+        never touches existing rows, so without this a run seen while
+        ``in_progress`` would keep that status forever and stay hidden from
+        every view.
         """
-        self._conn.executemany(
+        self._conn.execute(
             """UPDATE workflow_runs
-               SET status = :status, commit_sha = :commit_sha, run_date = :run_date,
-                   duration_secs = :duration_secs, raw_json = :raw_json
+               SET status = :status, duration_secs = :duration_secs, raw_json = :raw_json
                WHERE run_id = :run_id""",
-            [
-                {
-                    "run_id": r["run_id"],
-                    "status": r["status"],
-                    "commit_sha": r["commit_sha"],
-                    "run_date": r["run_date"],
-                    "duration_secs": r.get("duration_secs"),
-                    "raw_json": r["raw_json"],
-                }
-                for r in runs
-            ],
+            {
+                "run_id": run["run_id"],
+                "status": run["status"],
+                "duration_secs": run.get("duration_secs"),
+                "raw_json": run.get("raw_json", json.dumps(run)),
+            },
         )
         self._conn.commit()
 
@@ -208,7 +210,15 @@ class Cache:
         branch: Optional[str] = None,
         since: Optional[str] = None,
         until: Optional[str] = None,
+        event: Optional[str] = None,
     ) -> List[Dict]:
+        """Cached runs, newest first.
+
+        *event* keeps only runs whose GitHub trigger event (``schedule``,
+        ``push``, ``workflow_dispatch``, ...) matches. The event lives in
+        the stored API payload, not in a column, so it is read in Python
+        from the rows the SQL filters already selected.
+        """
         clauses: List[str] = []
         params: List[object] = []
         if repo is not None:
@@ -231,13 +241,25 @@ class Cache:
             params.append(until)
 
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        cols = "run_id, repo, workflow_file, status, branch, commit_sha, run_date, duration_secs"
+        if event is not None:
+            cols += ", raw_json"
         sql = (
-            "SELECT run_id, repo, workflow_file, status, branch, commit_sha, run_date, duration_secs FROM workflow_runs"
-            + where
-            + " ORDER BY run_date DESC"
+            "SELECT " + cols + " FROM workflow_runs" + where + " ORDER BY run_date DESC"
         )
         rows = self._conn.execute(sql, params).fetchall()
-        return [dict(row) for row in rows]
+        if event is None:
+            return [dict(row) for row in rows]
+        out: List[Dict] = []
+        for row in rows:
+            d = dict(row)
+            try:
+                run_event = json.loads(d.pop("raw_json") or "{}").get("event")
+            except json.JSONDecodeError:
+                run_event = None
+            if run_event == event:
+                out.append(d)
+        return out
 
     # ------------------------------------------------------------------
     # Jobs

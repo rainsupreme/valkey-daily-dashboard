@@ -1,5 +1,6 @@
 """Tests for report data generation (scorecard leaderboard wiring)."""
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -17,7 +18,7 @@ def _day(offset):
     return (datetime.now(timezone.utc) - timedelta(days=offset)).strftime("%Y-%m-%d")
 
 
-def _make_run(run_id, date_str, status="failure"):
+def _make_run(run_id, date_str, status="failure", event="schedule"):
     return {
         "run_id": run_id,
         "repo": "valkey-io/valkey",
@@ -26,6 +27,7 @@ def _make_run(run_id, date_str, status="failure"):
         "branch": "unstable",
         "commit_sha": f"sha{run_id}",
         "run_date": f"{date_str}T06:00:00Z",
+        "raw_json": json.dumps({"event": event}),
     }
 
 
@@ -96,25 +98,27 @@ class TestTabLayout:
         _store_failure(cache, 100, 200, _day(2), "recent in tests/unit/b.tcl")
         html = render_html(generate_report_data(cache, days=14))
 
-        # Four tab buttons.
+        # Five tab buttons.
         for attr in (
             'data-tab="heatmap"',
+            'data-tab="sla"',
             'data-tab="scorecard"',
             'data-tab="rundetails"',
             'data-tab="regressions"',
         ):
             assert attr in html
-        # Four panels, and the heatmap is active by default.
+        # Five panels, and the heatmap is active by default.
         for pid in (
             'id="tab-heatmap"',
+            'id="tab-sla"',
             'id="tab-scorecard"',
             'id="tab-rundetails"',
             'id="tab-regressions"',
         ):
             assert pid in html
         assert 'class="tab-panel active" id="tab-heatmap"' in html
-        # Exactly four panels (balanced open/close with the four sections).
-        assert html.count('class="tab-panel') == 4
+        # Exactly five panels (balanced open/close with the five sections).
+        assert html.count('class="tab-panel') == 5
 
 
 class TestResolvedSubList:
@@ -176,6 +180,7 @@ class TestRegressions:
                     "branch": "unstable",
                     "commit_sha": sha,
                     "run_date": f"{date}T06:00:00Z",
+                    "raw_json": '{"event": "schedule"}',
                 }
             ]
         )
@@ -713,3 +718,305 @@ class TestStaleBanner:
     def test_banner_with_no_runs_has_an_empty_date(self, cache):
         page = render_html(generate_report_data(cache, days=30))
         assert 'data-latest=""' in page
+
+
+class TestReliabilityTab:
+    """The Reliability SLA block in the data and its tab in the HTML."""
+
+    def _run(self, cache, run_id, day, jobs, status="failure", event="schedule"):
+        import json
+
+        cache.store_runs(
+            [
+                {
+                    **_make_run(run_id, day, status),
+                    "raw_json": json.dumps({"event": event}),
+                }
+            ]
+        )
+        rows = []
+        for i, (name, conclusion, failures) in enumerate(jobs):
+            jid = run_id * 100 + i
+            rows.append(
+                {
+                    "job_id": jid,
+                    "name": name,
+                    "status": "completed",
+                    "conclusion": conclusion,
+                }
+            )
+        cache.store_jobs(run_id, rows)
+        for i, (_n, _c, failures) in enumerate(jobs):
+            if failures:
+                cache.store_failures(
+                    run_id * 100 + i,
+                    [
+                        {"test_name": t, "error_summary": s, "log_lines": "x"}
+                        for t, s in failures
+                    ],
+                )
+
+    def _seed(self, cache):
+        from valkey_oncall.flakes import FlakeEntry, FlakeRegistry
+
+        tracked = "tracked flake in tests/unit/a.tcl"
+        untracked = "untracked test in tests/unit/b.tcl"
+        self._run(cache, 1, _day(3), [("job-x", "success", [])], status="success")
+        self._run(cache, 2, _day(2), [("job-x", "failure", [(tracked, "err")])])
+        self._run(
+            cache,
+            3,
+            _day(1),
+            [("job-x", "failure", [(tracked, "err"), (untracked, "err")])],
+        )
+        # A hand-started run that must not count.
+        self._run(
+            cache,
+            4,
+            _day(1),
+            [("job-x", "success", [])],
+            status="success",
+            event="workflow_dispatch",
+        )
+        return FlakeRegistry([FlakeEntry(test_name=tracked, issue=42)])
+
+    def test_data_block(self, cache):
+        registry = self._seed(cache)
+        data = generate_report_data(cache, days=14, registry=registry)
+        rel = data["reliability"]
+        assert rel["targets"] == {"green_rate": 0.5, "flake_rate": 0.01}
+        health = rel["run_health"]
+        assert health["meta"]["event"] == "schedule"
+        assert [r["run_id"] for r in health["runs"]] == [1, 2, 3]
+        last = health["rolling30"][-1]
+        assert last["green_runs"] == 1 and last["runs"] == 3
+        assert last["mean_unexplained_failed_jobs"] == pytest.approx(1 / 3, abs=1e-3)
+        rates = rel["flake_rates"]
+        assert rates["tests_tracked"] == 1
+        assert {t["test_name"]: t["executions"] for t in rates["tests"]} == {
+            "tracked flake in tests/unit/a.tcl": 3,
+            "untracked test in tests/unit/b.tcl": 3,
+        }
+        assert rel["over_budget_series"][-1]["failing_tests"] == 2
+
+    def test_html_tab_shows_numbers_and_targets(self, cache):
+        registry = self._seed(cache)
+        data = generate_report_data(cache, days=14, registry=registry)
+        html = render_html(data)
+        assert 'id="tab-sla"' in html
+        assert "1 / 3" in html  # fully green nightly runs
+        assert "target 50%" in html
+        assert "1 / 2" in html  # tracked failing tests
+        assert "untracked test" in html
+        assert (
+            "tracked flake"
+            not in html.split("without a tracking")[1].split("</table>")[0]
+        )
+        # Inline SVG charts carry the dashed target line, and nothing fetches.
+        assert 'class="sla-chart"' in html
+        assert 'class="sla-target"' in html
+        assert "<script src=" not in html
+
+    def test_ci_green_rate_rendered_from_ci_data(self, cache):
+        registry = self._seed(cache)
+        data = generate_report_data(cache, days=14, registry=registry)
+        import json
+
+        for i, status in enumerate(("success", "success", "failure", "cancelled")):
+            cache.store_runs(
+                [
+                    {
+                        **_make_run(50 + i, _day(1), status),
+                        "workflow_file": "ci.yml",
+                        "raw_json": json.dumps({"event": "push"}),
+                    }
+                ]
+            )
+            cache.store_jobs(
+                50 + i,
+                [
+                    {
+                        "job_id": 5000 + i,
+                        "name": "test-ubuntu-latest",
+                        "status": "completed",
+                        "conclusion": "success" if status == "success" else status,
+                    }
+                ],
+            )
+        ci = generate_report_data(
+            cache, workflow="ci.yml", per_run=True, registry=registry
+        )
+        ci_last = ci["reliability"]["run_health"]["rolling30"][-1]
+        assert ci_last["runs"] == 3  # the cancelled push run is left out
+        assert ci_last["green_rate"] == pytest.approx(2 / 3, abs=1e-3)
+        html = render_html(data, ci_data=ci)
+        assert "CI push runs fully green" in html
+        assert "target 95%" in html
+
+    def test_empty_window_renders(self, cache):
+        data = generate_report_data(cache, days=14)
+        html = render_html(data)
+        assert "no scheduled nightly runs in the window" in html
+        assert "no runs in the window" in html
+
+    def test_target_label_has_at_most_two_decimals(self, cache):
+        registry = self._seed(cache)
+        html = render_html(generate_report_data(cache, days=14, registry=registry))
+        # The failed-jobs budget is -ln(0.5) = 0.693147...
+        assert "target 0.69<" in html
+        assert "0.693" not in html
+
+    def test_cancelled_night_without_jobs_is_a_gap_not_a_zero(self, cache):
+        registry = self._seed(cache)
+        # A cancelled scheduled run with no job rows, as sync stores it.
+        cache.store_runs(
+            [
+                {
+                    **_make_run(9, _day(0), "cancelled"),
+                    "raw_json": '{"event": "schedule"}',
+                }
+            ]
+        )
+        data = generate_report_data(cache, days=14, registry=registry)
+        last = data["reliability"]["run_health"]["rolling30"][-1]
+        assert last["runs"] == 4 and last["job_data_runs"] == 3
+        assert last["mean_failed_jobs"] == pytest.approx(2 / 3, abs=1e-3)
+        html = render_html(data)
+        chart = html.split("failed jobs per nightly run</h3>")[1].split("</svg>")[0]
+        assert chart.count('class="sla-gap"') == 1
+        assert f"{_day(0)} · cancelled, no job data" in chart
+        assert "no job data</span>" in html  # legend entry
+        # The tooltip says what the stat is averaged over.
+        assert "the 3 of the last 4 runs with job data" in html
+
+
+class TestSlaChart:
+    def test_number_format(self):
+        from valkey_oncall.report import _sla_chart
+
+        pts = [{"date": "2026-11-01", "v": 12.0}, {"date": "2026-11-02", "v": 0.5}]
+        svg = _sla_chart(pts, [{"key": "v", "label": "v", "color": "#f00"}], 0.693147)
+        assert "target 0.69<" in svg
+        assert ">12<" in svg  # axis top, no trailing .00
+        assert "v: 0.5<" in svg
+        assert "0.693" not in svg
+
+    def test_percent_format_unchanged(self):
+        from valkey_oncall.report import _sla_chart
+
+        pts = [{"date": "2026-11-01", "v": 0.25}]
+        svg = _sla_chart(
+            pts,
+            [{"key": "v", "label": "v", "color": "#f00"}],
+            target=0.5,
+            ymax=1.0,
+            percent=True,
+        )
+        assert "target 50%" in svg and "v: 25%" in svg
+
+    def test_no_gap_no_hatch(self):
+        from valkey_oncall.report import _sla_chart
+
+        pts = [{"date": "2026-11-01", "v": 1}]
+        svg = _sla_chart(pts, [{"key": "v", "label": "v", "color": "#f00"}])
+        assert "sla-gap" not in svg and "sla-hatch" not in svg
+
+
+class TestScheduleOnlyDaily:
+    """Only the nightly schedule runs of daily.yml are Daily runs.
+
+    daily.yml is also started by hand (workflow_dispatch) to confirm fixes
+    against a PR head. Those runs must never stand in for a nightly, and
+    every chart has to end on the same latest scheduled run.
+    """
+
+    def _run(self, cache, run_id, day, status, event, failing_test=None):
+        cache.store_runs([_make_run(run_id, day, status, event=event)])
+        job_id = run_id * 100
+        cache.store_jobs(
+            run_id,
+            [
+                {
+                    "job_id": job_id,
+                    "name": "test-ubuntu",
+                    "status": "completed",
+                    "conclusion": "failure" if failing_test else "success",
+                }
+            ],
+        )
+        if failing_test:
+            cache.store_failures(
+                job_id,
+                [{"test_name": failing_test, "error_summary": "e", "log_lines": "x"}],
+            )
+
+    def test_schedule_run_wins_over_dispatch_on_same_day(self, cache):
+        # The hand-started run finished first (success); the nightly on the
+        # same date failed. Before the fix the first run of the day won.
+        self._run(cache, 10, _day(1), "success", "workflow_dispatch")
+        self._run(cache, 11, _day(1), "failure", "schedule", "x in tests/unit/a.tcl")
+        data = generate_report_data(cache, days=7)
+
+        assert [r["run_id"] for r in data["runs"]] == [11]
+        assert data["runs"][0]["status"] == "failure"
+        assert data["summary"]["failed_runs"] == 1
+        assert "x in tests/unit/a.tcl" in data["tests"]
+        health = data["reliability"]["run_health"]["runs"]
+        assert [r["run_id"] for r in health] == [11]
+        assert [t["test_name"] for t in data["scorecard"]["scorecards"]] == [
+            "x in tests/unit/a.tcl"
+        ]
+
+    def test_day_with_only_a_dispatch_run_has_no_daily_entry(self, cache):
+        self._run(cache, 20, _day(2), "failure", "schedule", "x in tests/unit/a.tcl")
+        self._run(
+            cache, 21, _day(1), "failure", "workflow_dispatch", "y in tests/unit/b.tcl"
+        )
+        data = generate_report_data(cache, days=7)
+
+        assert data["dates"] == [_day(2)]
+        assert data["summary"]["latest_run_date"] == _day(2)
+        assert "y in tests/unit/b.tcl" not in data["tests"]
+        assert all(
+            t["test_name"] != "y in tests/unit/b.tcl"
+            for t in data["scorecard"]["scorecards"]
+        )
+        assert all(
+            r["test_name"] != "y in tests/unit/b.tcl" for r in data["regressions"]
+        )
+
+    def test_event_all_keeps_dispatch_runs(self, cache):
+        self._run(
+            cache, 30, _day(1), "failure", "workflow_dispatch", "x in tests/unit/a.tcl"
+        )
+        assert generate_report_data(cache, days=7)["runs"] == []
+        data = generate_report_data(cache, days=7, event="all")
+        assert [r["run_id"] for r in data["runs"]] == [30]
+
+    def test_every_chart_series_ends_on_the_latest_scheduled_run(self, cache):
+        # A scheduled nightly every day, plus a newer hand-started run that
+        # must not extend any chart.
+        for i in range(5, 0, -1):
+            self._run(
+                cache, 100 + i, _day(i), "failure", "schedule", "x in tests/unit/a.tcl"
+            )
+        self._run(cache, 200, _day(0), "success", "workflow_dispatch")
+        data = generate_report_data(cache, days=30)
+        rel = data["reliability"]
+
+        last = {
+            "heatmap": data["dates"][-1],
+            "runs": data["runs"][-1]["day"],
+            "run_health": rel["run_health"]["runs"][-1]["date"],
+            "rolling7": rel["run_health"]["rolling7"][-1]["date"],
+            "rolling30": rel["run_health"]["rolling30"][-1]["date"],
+            "over_budget_series": rel["over_budget_series"][-1]["date"],
+            "flake_rates_last_failure": max(
+                t["last_failure"] for t in rel["flake_rates"]["tests"]
+            ),
+            "scorecard_last_seen": max(
+                t["last_seen"] for t in data["scorecard"]["scorecards"]
+            ),
+        }
+        assert set(last.values()) == {_day(1)}, last
+        assert data["summary"]["latest_run_date"] == _day(1)

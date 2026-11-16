@@ -17,12 +17,36 @@ per-run key is timestamp-prefixed, so ``key[:10]`` still yields the run's date
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 # Run statuses that are not settled pass/fail outcomes and are excluded from
 # every view (mirrors the report's filter; also drops fork-PR "action_required"
 # runs that would otherwise mask real scheduled/merge runs).
 EXCLUDED_STATUSES = ("in_progress", "queued", "skipped", "action_required")
+
+# Trigger event that counts for each workflow: the nightly schedule for
+# daily.yml and post-merge pushes for ci.yml. Hand-started runs of daily.yml
+# (workflow_dispatch, used to confirm fixes against a PR head) are not
+# nightly runs and are left out of every Daily view. The same map drives the
+# sync, so new runs with another event are not fetched or stored.
+RUN_EVENTS = {"daily.yml": "schedule", "ci.yml": "push"}
+
+# Pass as *event* to a view function to include runs of every trigger event.
+EVENT_ALL = "all"
+
+
+def run_event(workflow: str, event: Optional[str] = None) -> Optional[str]:
+    """Trigger event a view should keep for *workflow*.
+
+    ``None`` selects the workflow default from :data:`RUN_EVENTS` (no filter
+    for workflows not listed there); :data:`EVENT_ALL` disables the filter;
+    any other string is used as given.
+    """
+    if event is None:
+        return RUN_EVENTS.get(workflow)
+    if event == EVENT_ALL:
+        return None
+    return event
 
 
 def run_key(run: Dict, per_run: bool) -> str:

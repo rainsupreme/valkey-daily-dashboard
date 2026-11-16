@@ -109,7 +109,7 @@ def cache(tmp_path):
     return Cache(str(tmp_path / "test.db"))
 
 
-def _make_run(run_id, date_str, status="failure"):
+def _make_run(run_id, date_str, status="failure", event="schedule"):
     return {
         "run_id": run_id,
         "repo": "valkey-io/valkey",
@@ -118,6 +118,7 @@ def _make_run(run_id, date_str, status="failure"):
         "branch": "unstable",
         "commit_sha": f"abc{run_id}",
         "run_date": f"{date_str}T06:00:00Z",
+        "raw_json": json.dumps({"event": event}),
     }
 
 

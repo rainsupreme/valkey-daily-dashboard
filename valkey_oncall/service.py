@@ -19,6 +19,7 @@ from valkey_oncall.weekly import (
     build_synthetic_runs,
     split_jobs_by_branch,
 )
+from valkey_oncall.windowing import RUN_EVENTS
 
 # Type alias for the optional progress callback
 ProgressCallback = Optional[Callable[[str], None]]
@@ -31,19 +32,17 @@ _WORKFLOW_FILES = {
     "ci": "ci.yml",
 }
 
-# Trigger-event filter per workflow file. CI (ci.yml) fires on every push and
-# every PR; we only want post-merge runs on the target branch, so we restrict
-# it to the "push" event. Workflows absent from this map are fetched
-# unfiltered (all events).
-_WORKFLOW_EVENTS = {
-    "ci.yml": "push",
-}
+# Trigger-event filter per workflow file, shared with the views. CI (ci.yml)
+# fires on every push and every PR; we only want post-merge runs on the
+# target branch ("push"). daily.yml is also started by hand to confirm fixes
+# against a PR head; only the nightly "schedule" runs are wanted. Workflows
+# absent from the map are fetched unfiltered (all events).
+_WORKFLOW_EVENTS = RUN_EVENTS
 
-# A run listed before it finished carries one of these instead of a conclusion.
-# It is stored as seen and refreshed from a later listing.
-NON_FINAL_STATUSES = frozenset(
-    {"queued", "in_progress", "waiting", "pending", "requested", "unknown", ""}
-)
+# Cached statuses that can still change: the run had not finished when it was
+# first seen. _map_run stores the conclusion once there is one, so any other
+# value is final.
+_UNSETTLED_STATUSES = ("queued", "in_progress", "waiting", "requested", "pending")
 
 # A listing of a workflow the cache already knows starts this many days before
 # its newest cached run, so a run that started late or was listed late is still
@@ -75,7 +74,7 @@ def listing_since(cached_runs: List[Dict]) -> Optional[str]:
         return None
     start = newest - timedelta(days=LISTING_MARGIN_DAYS)
     for run in cached_runs:
-        if run.get("status") in NON_FINAL_STATUSES:
+        if run.get("status") in _UNSETTLED_STATUSES:
             pending = _parse_run_date(run.get("run_date", ""))
             if pending is not None and pending < start:
                 start = pending
@@ -161,14 +160,7 @@ class OnCallService:
             created_before=until,
             event=_WORKFLOW_EVENTS.get(workflow_file),
         )
-        new_runs: List[Dict] = []
-        for raw in api_runs:
-            run = _map_run(raw, self._client.repo)
-            if not self._cache.has_run(run["run_id"]):
-                new_runs.append(run)
-
-        if new_runs:
-            self._cache.store_runs(new_runs)
+        self._store_api_runs(api_runs)
 
         return self._cache.query_runs(
             repo=self._client.repo,
@@ -176,7 +168,32 @@ class OnCallService:
             branch=branch,
             since=since,
             until=until,
+            event=_WORKFLOW_EVENTS.get(workflow_file),
         )
+
+    def _store_api_runs(self, api_runs: List[Dict]) -> tuple[List[Dict], List[Dict]]:
+        """Cache runs from an API listing; return ``(new, refreshed)``.
+
+        A run already cached with an unsettled status (seen while it was
+        still running) is overwritten with the current API state once that
+        state differs, so a nightly that was in progress during one sync
+        gets its real conclusion on the next. Settled rows are never touched.
+        """
+        new_runs: List[Dict] = []
+        refreshed: List[Dict] = []
+        for raw in api_runs:
+            run = _map_run(raw, self._client.repo)
+            cached_status = self._cache.get_run_status(run["run_id"])
+            if cached_status is None:
+                new_runs.append(run)
+            elif (
+                cached_status in _UNSETTLED_STATUSES and cached_status != run["status"]
+            ):
+                self._cache.update_run(run)
+                refreshed.append(run)
+        if new_runs:
+            self._cache.store_runs(new_runs)
+        return new_runs, refreshed
 
     def fetch_jobs(self, run_id: int) -> List[Dict]:
         """Fetch jobs for a run from the API if not cached, return all.
@@ -331,6 +348,7 @@ class OnCallService:
 
         summary: Dict = {
             "new_runs_fetched": 0,
+            # Runs cached while still running whose final status was fetched now.
             "runs_refreshed": 0,
             "new_jobs_fetched": 0,
             "new_logs_fetched": 0,
@@ -354,12 +372,11 @@ class OnCallService:
 
             try:
                 cached = self._cache.query_runs(
-                    repo=self._client.repo, workflow=workflow_file, branch=branch
+                    repo=self._client.repo,
+                    workflow=workflow_file,
+                    branch=branch,
+                    event=_WORKFLOW_EVENTS.get(workflow_file),
                 )
-                existing_run_ids = {r["run_id"] for r in cached}
-                unfinished = {
-                    r["run_id"] for r in cached if r["status"] in NON_FINAL_STATUSES
-                }
                 # The caller's window wins; otherwise list only what can be new
                 # or changed since the last sync.
                 window_start = since if since is not None else listing_since(cached)
@@ -370,20 +387,7 @@ class OnCallService:
                     created_before=until,
                     event=_WORKFLOW_EVENTS.get(workflow_file),
                 )
-                listed = [_map_run(raw, self._client.repo) for raw in api_runs]
-                new_runs: List[Dict] = [
-                    run for run in listed if run["run_id"] not in existing_run_ids
-                ]
-                refreshed: List[Dict] = [
-                    run
-                    for run in listed
-                    if run["run_id"] in unfinished
-                    and run["status"] not in NON_FINAL_STATUSES
-                ]
-                if new_runs:
-                    self._cache.store_runs(new_runs)
-                if refreshed:
-                    self._cache.update_runs(refreshed)
+                new_runs, refreshed = self._store_api_runs(api_runs)
             except Exception as exc:
                 summary["errors"].append(f"fetch_runs({wf}): {exc}")
                 if (
@@ -395,12 +399,12 @@ class OnCallService:
                 _log(f"  Error fetching {wf} runs: {exc}")
                 continue
 
-            _log(
-                f"  {len(new_runs)} new runs, {len(refreshed)} finished since last seen"
-            )
+            _log(f"  {len(new_runs)} new runs, {len(refreshed)} refreshed")
             summary["new_runs_fetched"] += len(new_runs)
             summary["runs_refreshed"] += len(refreshed)
 
+            # A refreshed run that ended in failure needs its jobs and logs
+            # like a new one; fetch_jobs re-reads jobs cached while running.
             failed_runs = [r for r in new_runs + refreshed if r["status"] == "failure"]
             if failed_runs:
                 _log(f"  {len(failed_runs)} failed runs to process")

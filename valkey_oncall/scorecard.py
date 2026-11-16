@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from valkey_oncall.cache import Cache
 from valkey_oncall.log_parser import sanitize_cached_failure
-from valkey_oncall.windowing import run_key, select_runs
+from valkey_oncall.windowing import run_event, run_key, select_runs
 
 # A test failing this many most-recent CI days in a row is treated as an
 # active regression ("persistent") rather than a flake, even if its
@@ -121,8 +121,13 @@ def compute_scorecards(
     repo: str = "valkey-io/valkey",
     per_run: bool = False,
     max_runs: int = 50,
+    event: Optional[str] = None,
 ) -> Dict:
     """Compute per-test flakiness scorecards.
+
+    *event* selects the trigger event to keep (see
+    :func:`valkey_oncall.windowing.run_event`); the default keeps only the
+    nightly schedule for daily.yml and pushes for ci.yml.
 
     The failure *rate* and classification use ALL cached history (not just
     the recent ``days`` window), so the denominator grows over time and low
@@ -138,7 +143,9 @@ def compute_scorecards(
     failure rate (descending).
     """
     # Rate/roster span ALL cached runs; trend/sparkline span the recent window.
-    runs = cache.query_runs(repo=repo, workflow=workflow, branch=branch)
+    runs = cache.query_runs(
+        repo=repo, workflow=workflow, branch=branch, event=run_event(workflow, event)
+    )
     valid_runs = select_runs(runs, per_run=per_run)
 
     if not valid_runs:

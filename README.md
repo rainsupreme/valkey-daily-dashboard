@@ -145,6 +145,28 @@ with no fix recorded, a trailing `?` means the registered failure mode was not
 seen in the window (test-name match only). `report --registry` points at a
 different file; a missing file renders an empty column.
 
+### Reliability SLA
+
+The HTML report's **Reliability SLA** tab tracks the nightly run against the
+goal of a mostly green week. Only scheduled `daily.yml` runs count (hand-started
+runs are left out) and a cancelled night is not green. It shows:
+
+- the rolling 30-run fully green rate against its target (50% first), and the
+  same for post-merge `ci.yml` push runs (target 95%);
+- failed jobs per nightly run, with the share not explained by a `flakes.json`
+  entry (a failed job is explained when every parsed failure in it matches an
+  entry exactly);
+- how many tests fail in more than 1% of their executions over a rolling 30-day
+  window. Executions are derived: a test is assumed to run in every finished job
+  whose name it has been seen failing in during the window, so the rate is an
+  overestimate for tests seen in few jobs. Each rate carries a 90% Beta credible
+  interval; the headline count is the tests whose whole interval is above 1%;
+- the share of failing tests with a tracking issue or PR, and the untracked ones.
+
+The same numbers are in `report.json` (and `report-ci.json`) under `reliability`:
+`run_health` (per run and rolling 7/30), `flake_rates` (per test and job) and
+`over_budget_series`.
+
 ### Scorecards
 
 Per-test flakiness scorecards with trend analysis:
@@ -301,6 +323,7 @@ valkey_oncall/
   service.py        — orchestration (sync, fetch, parse)
   report.py         — HTML report generation
   scorecard.py      — per-test flakiness scorecards
+  reliability.py    — per-execution flake rates and run health (SLA tab)
   blame.py          — regression blame narrowing
   flakes.py         — flake registry (flakes.json) and sightings
   cli.py            — click CLI entry point
