@@ -50,12 +50,14 @@ class _CountingClient:
     def __init__(self, runs: List[Dict], jobs: Dict[int, List[Dict]], logs=None):
         self.repo = "valkey-io/valkey"
         self.requests_made = 0
+        self.listings = 0
         self._runs = runs
         self._jobs = jobs
         self._logs = logs or {}
 
     def get_workflow_runs(self, **kwargs) -> List[Dict]:
         self.requests_made += 1
+        self.listings += 1
         return self._runs
 
     def get_jobs_for_run(self, run_id: int) -> List[Dict]:
@@ -225,3 +227,13 @@ class TestSyncWeeklyBranches:
         assert client.requests_made == 2
         assert summary["runs_split"] == 1
         assert summary["runs_completed"] == 1
+
+
+class TestSyncWeeklyBranchesWithoutRelisting:
+    def test_refresh_runs_false_skips_the_listing(self, temp_db_path: str) -> None:
+        svc, client, cache = _two_branch_setup(temp_db_path)
+        svc.sync(workflow="weekly", branch="unstable")
+        assert client.listings == 1
+        summary = svc.sync_weekly_branches(budget=100, refresh_runs=False)
+        assert client.listings == 1  # not listed a second time
+        assert summary["runs_split"] == 1 and summary["runs_completed"] == 1

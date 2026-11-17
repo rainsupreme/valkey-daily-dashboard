@@ -623,8 +623,14 @@ def sync(
     help="Max GitHub API calls this invocation may spend; unfinished "
     "backfill resumes on the next invocation.",
 )
+@click.option(
+    "--no-refresh-runs",
+    is_flag=True,
+    default=False,
+    help="Do not list the weekly runs again; use after a sync that just did.",
+)
 @click.pass_context
-def sync_releases(ctx: click.Context, budget: int) -> None:
+def sync_releases(ctx: click.Context, budget: int, no_refresh_runs: bool) -> None:
     """Ingest weekly release-branch runs as per-branch series (budgeted)."""
     try:
         _require_token()
@@ -638,7 +644,9 @@ def sync_releases(ctx: click.Context, budget: int) -> None:
             def progress(msg):
                 click.echo(msg, err=True)
 
-        summary = svc.sync_weekly_branches(budget=budget, progress=progress)
+        summary = svc.sync_weekly_branches(
+            budget=budget, progress=progress, refresh_runs=not no_refresh_runs
+        )
         click.echo(json.dumps(summary, indent=2))
         if summary.get("auth_failed"):
             click.echo(
